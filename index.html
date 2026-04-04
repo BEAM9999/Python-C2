@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="th">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PyQuest Academy</title>
+    <meta
+      name="description"
+      content="เกมสอน Python แบบด่านยาว มีครู AI สอนจริง สร้างด่านต่อเนื่อง และบันทึกทุกอย่างในเครื่อง"
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Kanit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./styles/main.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <section id="mapScreen" class="screen">
+        <header class="map-header">
+          <button id="openProfileBtn" class="identity-card" type="button">
+            <img id="profileAvatar" class="avatar" alt="Profile avatar" />
+            <div>
+              <p class="eyebrow">PLAYER ID</p>
+              <h1 id="profileNameLabel">นักเรียนใหม่</h1>
+              <p id="playerIdLabel" class="muted"></p>
+            </div>
+          </button>
+
+          <div class="map-controls">
+            <div class="resource-pill hearts"><span>❤</span><strong id="heartCount">7</strong></div>
+            <div class="resource-pill"><span>◆</span><strong id="gemCount">0</strong></div>
+            <div class="resource-pill"><span>LV</span><strong id="levelLabel">1</strong></div>
+            <label class="model-picker">
+              <span>AI Model</span>
+              <select id="modelSelect"></select>
+            </label>
+            <button id="settingsBtn" class="icon-button" type="button" aria-label="ตั้งค่า">⚙</button>
+          </div>
+        </header>
+
+        <main class="map-board">
+          <section class="campaign-panel">
+            <div class="campaign-copy">
+              <p class="eyebrow">Stage Select</p>
+              <h2>เลือกด่านที่อยากลุย</h2>
+              <p id="campaignStatus" class="muted">
+                ครู AI จะสร้างด่านใหม่ต่อจากสิ่งที่คุณเคยเรียนแล้ว และจะเก็บทั้งหมดไว้ในเครื่องนี้
+              </p>
+            </div>
+
+            <div class="campaign-stats">
+              <div class="stat-card">
+                <span>XP</span>
+                <strong id="xpCount">0</strong>
+              </div>
+              <div class="stat-card">
+                <span>ชนะ</span>
+                <strong id="winCount">0</strong>
+              </div>
+              <div class="stat-card">
+                <span>แพ้</span>
+                <strong id="lossCount">0</strong>
+              </div>
+              <div class="stat-card">
+                <span>ทบทวน</span>
+                <strong id="reviewCount">0</strong>
+              </div>
+            </div>
+          </section>
+
+          <section id="stageGrid" class="stage-grid"></section>
+        </main>
+      </section>
+
+      <section id="lessonScreen" class="screen hidden">
+        <header class="lesson-header">
+          <div class="lesson-meta">
+            <p id="lessonStageCode" class="eyebrow">Stage 001</p>
+            <h2 id="lessonTitle">กำลังเตรียมด่าน</h2>
+            <p id="lessonSubtitle" class="muted"></p>
+          </div>
+
+          <div class="lesson-progress-cluster">
+            <div class="resource-pill hearts"><span>❤</span><strong id="lessonHeartCount">7</strong></div>
+            <div class="lesson-progress-box">
+              <span id="stepCounter">Step 1 / 1</span>
+              <div class="progress-track">
+                <div id="lessonProgressFill" class="progress-fill"></div>
+              </div>
+            </div>
+          </div>
+        </header>
+
+        <main class="lesson-shell">
+          <section class="teacher-card">
+            <div class="teacher-head">
+              <span class="teacher-badge">AI TEACHER</span>
+              <span id="lessonDifficulty" class="pill">ง่าย</span>
+            </div>
+            <h3 id="stepTitle">กำลังเตรียมคำอธิบาย</h3>
+            <p id="teacherSpeech" class="teacher-speech"></p>
+            <div id="teacherBullets" class="teacher-bullets"></div>
+            <div id="memoryHook" class="memory-hook"></div>
+          </section>
+
+          <section class="focus-card">
+            <div class="focus-window">
+              <div class="focus-header">
+                <span class="window-dot red"></span>
+                <span class="window-dot yellow"></span>
+                <span class="window-dot green"></span>
+                <strong>Lesson Focus</strong>
+              </div>
+
+              <div class="focus-body">
+                <div class="code-stack">
+                  <div class="code-pane">
+                    <p class="code-label">ตัวอย่างโค้ด</p>
+                    <pre id="codePreview" class="code-preview"></pre>
+                  </div>
+                  <div class="code-pane">
+                    <p class="code-label">ผลลัพธ์ที่ควรเห็น</p>
+                    <pre id="outputPreview" class="output-preview"></pre>
+                  </div>
+                </div>
+
+                <div id="answerReveal" class="answer-reveal hidden"></div>
+
+                <div class="practice-panel">
+                  <p id="stepInstruction" class="practice-instruction"></p>
+                  <div id="answerArea" class="answer-area"></div>
+                  <div id="feedbackPanel" class="feedback-panel" aria-live="polite"></div>
+                </div>
+              </div>
+            </div>
+          </section>
+        </main>
+
+        <footer class="lesson-footer">
+          <p>โหมดโฟกัส: ใช้ `Esc` เพื่อกลับหน้าแผนที่</p>
+          <button id="primaryActionBtn" class="primary-button" type="button">ต่อไป</button>
+        </footer>
+      </section>
+    </div>
+
+    <dialog id="settingsDialog" class="modal-shell">
+      <form method="dialog" class="modal-card settings-card">
+        <div class="modal-header">
+          <div>
+            <p class="eyebrow">ตั้งค่า Gemini</p>
+            <h3>API Keys และ Model Fallback</h3>
+          </div>
+          <button class="icon-button" value="cancel" aria-label="ปิด">✕</button>
+        </div>
+
+        <div class="settings-grid">
+          <section class="modal-section">
+            <div class="panel-header">
+              <h4>Gemini API Keys</h4>
+              <a class="link-button" href="https://aistudio.google.com/api-keys" target="_blank" rel="noreferrer">
+                เปิดหน้า API Keys
+              </a>
+            </div>
+            <p class="muted">เพิ่มได้หลายคีย์ ระบบจะสลับโมเดลและสลับคีย์ให้ตามสถานะโควต้า</p>
+            <div id="apiKeyList" class="key-list"></div>
+            <div class="inline-actions">
+              <button id="addKeyRowBtn" class="secondary-button" type="button">+ เพิ่มคีย์</button>
+              <button id="bulkPasteBtn" class="ghost-button" type="button">วางหลายคีย์พร้อมกัน</button>
+            </div>
+          </section>
+
+          <section class="modal-section">
+            <div class="panel-header">
+              <h4>สถานะโมเดล</h4>
+            </div>
+            <div id="settingsModelList" class="settings-model-list"></div>
+          </section>
+        </div>
+
+        <div class="task-actions">
+          <button id="validateModelsBtn" class="primary-button" type="button">ตรวจสอบโมเดลตอนนี้</button>
+          <button id="saveSettingsBtn" class="secondary-button" value="default">บันทึกและปิด</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="profileDialog" class="modal-shell">
+      <form method="dialog" class="modal-card">
+        <div class="modal-header">
+          <div>
+            <p class="eyebrow">โปรไฟล์ผู้เล่น</p>
+            <h3>ตั้ง ID ของคุณ</h3>
+          </div>
+          <button class="icon-button" value="cancel" aria-label="ปิด">✕</button>
+        </div>
+
+        <div class="form-grid">
+          <label class="field">
+            <span>ชื่อโปรไฟล์</span>
+            <input id="profileNameInput" type="text" placeholder="เช่น Mali หรือ Beam" maxlength="24" />
+          </label>
+
+          <label class="field">
+            <span>รูปโปรไฟล์</span>
+            <input id="profileAvatarInput" type="file" accept="image/*" />
+          </label>
+        </div>
+
+        <p class="muted">
+          ถ้ายังไม่อยากตั้งตอนนี้กดข้ามได้ ข้อมูลจะถูกเก็บไว้ในเครื่องนี้ทั้งหมดและไม่หายเมื่อรีเฟรช
+        </p>
+
+        <div class="task-actions">
+          <button id="profileSkipBtn" class="ghost-button" value="cancel">ข้ามก่อน</button>
+          <button id="profileSaveBtn" class="primary-button" value="default">บันทึกโปรไฟล์</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="bulkPasteDialog" class="modal-shell">
+      <form method="dialog" class="modal-card">
+        <div class="modal-header">
+          <div>
+            <p class="eyebrow">วางคีย์แบบหลายบรรทัด</p>
+            <h3>Paste Keys</h3>
+          </div>
+          <button class="icon-button" value="cancel" aria-label="ปิด">✕</button>
+        </div>
+        <label class="field">
+          <span>วางข้อความได้เลย เช่น key = AIza...</span>
+          <textarea id="bulkPasteInput" rows="10" placeholder="key = AIzaSy..."></textarea>
+        </label>
+        <div class="task-actions">
+          <button id="bulkPasteApplyBtn" class="primary-button" type="button">เพิ่มคีย์ทั้งหมด</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="stageResultDialog" class="modal-shell">
+      <form method="dialog" class="modal-card stage-result-card">
+        <div class="modal-header">
+          <div>
+            <p class="eyebrow">Stage Cleared</p>
+            <h3 id="stageResultTitle">ผ่านด่านแล้ว</h3>
+          </div>
+        </div>
+        <p id="stageResultBody" class="stage-result-body"></p>
+        <div class="task-actions">
+          <button id="stageResultBtn" class="primary-button" value="default">กลับหน้าแผนที่</button>
+        </div>
+      </form>
+    </dialog>
+
+    <template id="typeAnswerTemplate">
+      <label class="field">
+        <span>พิมพ์คำตอบหรือโค้ดตรงนี้</span>
+        <textarea id="typedAnswerInput" rows="7" spellcheck="false"></textarea>
+      </label>
+    </template>
+
+    <template id="choiceAnswerTemplate">
+      <div id="choiceAnswerWrap" class="choice-grid"></div>
+    </template>
+
+    <script type="module" src="./scripts/app.js"></script>
+  </body>
+</html>
