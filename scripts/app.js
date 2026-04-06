@@ -1,7 +1,15 @@
 import { DEFAULT_AVATAR, MAX_HEARTS, MODEL_OPTIONS, STAGE_BUFFER } from "./data.js";
 import { playClick, playFail, playSuccess } from "./audio.js";
-import { probeModel } from "./gemini.js";
-import { buildReviewRecord, calculateLevel, compareStepAnswer, getCurrentStep, getStageById, nextHeartsAfterFailure } from "./lesson-engine.js";
+import { probeModel, requestAnswerEvaluation } from "./gemini.js";
+import {
+  analyzeDraftAnswer,
+  buildReviewRecord,
+  calculateLevel,
+  compareStepAnswer,
+  getCurrentStep,
+  getStageById,
+  nextHeartsAfterFailure,
+} from "./lesson-engine.js";
 import { createStage } from "./stage-generator.js";
 import { loadState, saveState } from "./storage.js";
 
@@ -74,6 +82,15 @@ function migrateState(rawState) {
 
 const state = migrateState(loadState(DEFAULT_STATE));
 
+const runtime = {
+  modelPickerOpen: false,
+  modelValidationBusy: false,
+  modelValidationTargets: [],
+  modelValidationToken: 0,
+  answerEvaluationBusy: false,
+  liveFeedback: { stageId: null, stepId: null, type: "", text: "" },
+};
+
 const ui = {
   mapScreen: document.querySelector("#mapScreen"),
   lessonScreen: document.querySelector("#lessonScreen"),
@@ -90,7 +107,12 @@ const ui = {
   reviewCount: document.querySelector("#reviewCount"),
   campaignStatus: document.querySelector("#campaignStatus"),
   stageGrid: document.querySelector("#stageGrid"),
-  modelSelect: document.querySelector("#modelSelect"),
+  modelPicker: document.querySelector("#modelPicker"),
+  modelPickerButton: document.querySelector("#modelPickerButton"),
+  modelPickerStatusDot: document.querySelector("#modelPickerStatusDot"),
+  modelPickerValue: document.querySelector("#modelPickerValue"),
+  modelPickerStatusText: document.querySelector("#modelPickerStatusText"),
+  modelPickerMenu: document.querySelector("#modelPickerMenu"),
   settingsBtn: document.querySelector("#settingsBtn"),
   lessonStageCode: document.querySelector("#lessonStageCode"),
   lessonTitle: document.querySelector("#lessonTitle"),
@@ -98,6 +120,7 @@ const ui = {
   lessonHeartCount: document.querySelector("#lessonHeartCount"),
   stepCounter: document.querySelector("#stepCounter"),
   lessonProgressFill: document.querySelector("#lessonProgressFill"),
+  lessonBackBtn: document.querySelector("#lessonBackBtn"),
   lessonDifficulty: document.querySelector("#lessonDifficulty"),
   stepTitle: document.querySelector("#stepTitle"),
   teacherSpeech: document.querySelector("#teacherSpeech"),
@@ -141,8 +164,36 @@ function sanitizeKeys(keys) {
   return keys.map((key) => key.trim()).filter(Boolean);
 }
 
+function configuredKeys() {
+  return sanitizeKeys(state.apiKeys);
+}
+
+function clearStageDrafts(stageId) {
+  Object.keys(state.draftAnswers).forEach((key) => {
+    if (key.startsWith(`${stageId}:`)) {
+      delete state.draftAnswers[key];
+    }
+  });
+}
+
+function invalidateModelStatuses() {
+  runtime.modelValidationToken += 1;
+  runtime.modelValidationBusy = false;
+  runtime.modelValidationTargets = [];
+  state.modelStatuses = {};
+  persist();
+}
+
 function answerDraftKey(stageId, stepId) {
   return `${stageId}:${stepId}`;
+}
+
+function setLiveFeedback(stageId, stepId, type, text) {
+  runtime.liveFeedback = { stageId, stepId, type, text };
+}
+
+function clearLiveFeedback() {
+  runtime.liveFeedback = { stageId: null, stepId: null, type: "", text: "" };
 }
 
 function isStageCompleted(stageId) {
@@ -179,28 +230,164 @@ function updateStageAttempt(stageId, partial) {
   };
 }
 
-function getDifficultyLabel(stage) {
-  if (!stage) return "ง่าย";
-  if (stage.difficulty <= 2) return "เริ่มต้น";
-  if (stage.difficulty <= 4) return "กลางทาง";
-  if (stage.difficulty <= 6) return "จริงจัง";
-  return "โปรเจกต์ใหญ่";
+function resetStageProgress(stageId) {
+  if (!stageId) return;
+  clearStageDrafts(stageId);
+  updateStageAttempt(stageId, { currentStep: 0 });
+}
+
+function getModelStatusesFor(modelName) {
+  const keys = configuredKeys();
+  const statuses = [];
+
+  for (let keyIndex = 0; keyIndex < keys.length; keyIndex += 1) {
+    const status = state.modelStatuses[`${keyIndex}:${modelName}`];
+    if (status) statuses.push(status);
+  }
+
+  return statuses;
+}
+
+function getModelStatusSummary(modelName) {
+  const keys = configuredKeys();
+  const statuses = getModelStatusesFor(modelName);
+  const fullyChecked = keys.length > 0 && statuses.length >= keys.length;
+
+  if (!keys.length) {
+    return {
+      tone: "idle",
+      label: "ยังไม่มี API key",
+      helper: "เพิ่มคีย์ก่อน ระบบถึงจะเช็กสถานะโมเดลให้อัตโนมัติ",
+    };
+  }
+
+  if (statuses.some((item) => item.status === "ready")) {
+    return {
+      tone: "ready",
+      label: "พร้อมใช้งาน",
+      helper: "มีอย่างน้อยหนึ่งคีย์ที่เรียกโมเดลนี้ได้",
+    };
+  }
+
+  if (runtime.modelValidationBusy && runtime.modelValidationTargets.includes(modelName) && !fullyChecked) {
+    return {
+      tone: "checking",
+      label: "กำลังตรวจสอบ",
+      helper: "กำลังส่งคำสั้น ๆ ไปเช็กว่าโมเดลนี้ยังตอบกลับได้หรือไม่",
+    };
+  }
+
+  if (fullyChecked && statuses.every((item) => item.status === "quota")) {
+    return {
+      tone: "quota",
+      label: "โควต้าหมด",
+      helper: "ทุกคีย์ที่มีใช้โควต้าของโมเดลนี้ครบแล้ว",
+    };
+  }
+
+  if (fullyChecked && statuses.every((item) => item.status === "error")) {
+    return {
+      tone: "error",
+      label: "เรียกใช้ไม่ได้",
+      helper: statuses[0]?.detail || "เชื่อมต่อโมเดลนี้ไม่สำเร็จ",
+    };
+  }
+
+  if (statuses.some((item) => item.status === "quota")) {
+    return {
+      tone: "quota",
+      label: "บางคีย์โควต้าหมด",
+      helper: "ยังไม่เจอคีย์ที่พร้อมใช้งานสำหรับโมเดลนี้",
+    };
+  }
+
+  if (statuses.some((item) => item.status === "error")) {
+    return {
+      tone: "error",
+      label: "ตรวจสอบไม่ผ่าน",
+      helper: statuses[0]?.detail || "ลองตรวจสอบอีกครั้ง",
+    };
+  }
+
+  return {
+    tone: "unknown",
+    label: "ยังไม่ตรวจสอบ",
+    helper: "เลือกโมเดลนี้เมื่อไรก็จะเช็กสถานะให้อีกครั้งทันที",
+  };
+}
+
+function closeModelPicker() {
+  runtime.modelPickerOpen = false;
+  ui.modelPickerButton.classList.remove("is-open");
+  ui.modelPickerButton.setAttribute("aria-expanded", "false");
+  ui.modelPickerMenu.classList.add("hidden");
+}
+
+function setModelPickerOpen(nextOpen) {
+  runtime.modelPickerOpen = nextOpen;
+  ui.modelPickerButton.classList.toggle("is-open", nextOpen);
+  ui.modelPickerButton.setAttribute("aria-expanded", String(nextOpen));
+  ui.modelPickerMenu.classList.toggle("hidden", !nextOpen);
+}
+
+function syncValidationButton() {
+  const hasKeys = configuredKeys().length > 0;
+  ui.validateModelsBtn.disabled = runtime.modelValidationBusy || !hasKeys;
+  ui.validateModelsBtn.textContent = runtime.modelValidationBusy ? "กำลังตรวจสอบ..." : "ตรวจสอบโมเดลตอนนี้";
 }
 
 function renderModelSelect() {
-  ui.modelSelect.innerHTML = "";
-  MODEL_OPTIONS.forEach((model) => {
-    const option = document.createElement("option");
-    option.value = model;
-    const statuses = Object.entries(state.modelStatuses).filter(([key]) => key.endsWith(`:${model}`));
-    const anyQuota = statuses.some(([, value]) => value.status === "quota");
-    option.textContent = anyQuota ? `${model} (quota)` : model;
-    if (model === state.preferredModel) option.selected = true;
-    ui.modelSelect.appendChild(option);
+  const currentStatus = getModelStatusSummary(state.preferredModel);
+
+  ui.modelPickerValue.textContent = state.preferredModel;
+  ui.modelPickerStatusText.textContent = currentStatus.label;
+  ui.modelPickerStatusDot.className = `model-status-dot tone-${currentStatus.tone}`;
+  ui.modelPickerButton.className = `model-picker-button tone-${currentStatus.tone}${runtime.modelPickerOpen ? " is-open" : ""}`;
+  ui.modelPickerButton.title = currentStatus.helper;
+
+  ui.modelPickerMenu.innerHTML = "";
+
+  MODEL_OPTIONS.forEach((modelName) => {
+    const status = getModelStatusSummary(modelName);
+    const option = document.createElement("button");
+    const copy = document.createElement("span");
+    const heading = document.createElement("span");
+    const detail = document.createElement("small");
+    const statusWrap = document.createElement("span");
+    const dot = document.createElement("span");
+    const badge = document.createElement("span");
+
+    option.type = "button";
+    option.role = "option";
+    option.className = `model-option tone-${status.tone}`;
+    if (modelName === state.preferredModel) option.classList.add("selected");
+
+    copy.className = "model-option-copy";
+    heading.textContent = modelName;
+    detail.textContent = status.helper;
+    copy.append(heading, detail);
+
+    statusWrap.className = "model-option-status";
+    dot.className = `model-status-dot tone-${status.tone}`;
+    badge.className = `status-badge tone-${status.tone}`;
+    badge.textContent = status.label;
+    statusWrap.append(dot, badge);
+
+    option.append(copy, statusWrap);
+    option.addEventListener("click", () => {
+      state.preferredModel = modelName;
+      persist();
+      renderModelSelect();
+      renderSettingsModelList();
+      closeModelPicker();
+      void validateModels({ models: [modelName] });
+    });
+
+    ui.modelPickerMenu.appendChild(option);
   });
 }
 
-function renderSettings() {
+function renderApiKeyList() {
   ui.apiKeyList.innerHTML = "";
   state.apiKeys.forEach((key, index) => {
     const row = document.createElement("div");
@@ -211,42 +398,98 @@ function renderSettings() {
     `;
     row.querySelector("input").addEventListener("input", (event) => {
       state.apiKeys[index] = event.target.value;
-      persist();
+      invalidateModelStatuses();
+      renderModelSelect();
+      renderSettingsModelList();
+      syncValidationButton();
     });
     row.querySelector("button").addEventListener("click", () => {
       state.apiKeys.splice(index, 1);
       if (!state.apiKeys.length) state.apiKeys.push("");
+      invalidateModelStatuses();
       renderSettings();
-      persist();
+      renderModelSelect();
     });
     ui.apiKeyList.appendChild(row);
   });
+}
 
+function renderSettingsModelList() {
   ui.settingsModelList.innerHTML = "";
   MODEL_OPTIONS.forEach((model) => {
+    const status = getModelStatusSummary(model);
     const card = document.createElement("button");
+    const header = document.createElement("div");
+    const title = document.createElement("strong");
+    const badge = document.createElement("span");
+    const body = document.createElement("p");
+
     card.type = "button";
-    card.className = "model-status-card";
-    const statuses = Object.entries(state.modelStatuses).filter(([key]) => key.endsWith(`:${model}`));
-    const ready = statuses.some(([, value]) => value.status === "ready");
-    const quota = statuses.some(([, value]) => value.status === "quota");
-    card.innerHTML = `
-      <div class="panel-header">
-        <strong>${model}</strong>
-        <span class="${ready ? "badge-ready" : quota ? "badge-lock" : "pill"}">
-          ${ready ? "พร้อม" : quota ? "โควต้าหมด" : "ยังไม่ตรวจ"}
-        </span>
-      </div>
-      <p class="muted">กดเพื่อเลือกเป็นโมเดลหลัก</p>
-    `;
+    card.className = `model-status-card tone-${status.tone}`;
+    if (model === state.preferredModel) card.classList.add("selected");
+
+    header.className = "panel-header";
+    title.textContent = model;
+    badge.className = `status-badge tone-${status.tone}`;
+    badge.textContent = status.label;
+    header.append(title, badge);
+
+    body.className = "muted";
+    body.textContent = status.helper;
+
+    card.append(header, body);
     card.addEventListener("click", () => {
       state.preferredModel = model;
-      renderModelSelect();
-      renderSettings();
       persist();
+      renderModelSelect();
+      renderSettingsModelList();
+      void validateModels({ models: [model] });
     });
     ui.settingsModelList.appendChild(card);
   });
+}
+
+function getFallbackFeedback(step) {
+  return step.type === "teach"
+    ? "ขั้นนี้เน้นฟังให้เข้าใจและจำภาพของโค้ดก่อน"
+    : "เมื่อพร้อมแล้วกดส่งคำตอบ ครูจะเช็กให้ทันที";
+}
+
+function renderFeedbackPanel(stage, step) {
+  const liveFeedback =
+    runtime.liveFeedback.stageId === stage.id && runtime.liveFeedback.stepId === step.id && runtime.liveFeedback.text
+      ? runtime.liveFeedback
+      : null;
+
+  const feedback = liveFeedback?.text
+    ? liveFeedback
+    : state.lessonFeedback.text
+      ? state.lessonFeedback
+      : { type: "", text: getFallbackFeedback(step) };
+
+  ui.feedbackPanel.className = `feedback-panel ${feedback.type || ""}`.trim();
+  ui.feedbackPanel.textContent = feedback.text;
+}
+
+function handleModelStatusUpdate(keyIndex, modelName, value) {
+  state.modelStatuses[`${keyIndex}:${modelName}`] = value;
+  persist();
+  renderSettingsModelList();
+  renderModelSelect();
+}
+
+function getDifficultyLabel(stage) {
+  if (!stage) return "ง่าย";
+  if (stage.difficulty <= 2) return "เริ่มต้น";
+  if (stage.difficulty <= 4) return "กลางทาง";
+  if (stage.difficulty <= 6) return "จริงจัง";
+  return "โปรเจกต์ใหญ่";
+}
+
+function renderSettings() {
+  renderApiKeyList();
+  renderSettingsModelList();
+  syncValidationButton();
 }
 
 function renderTopHud() {
@@ -367,10 +610,16 @@ function renderAnswerArea(stage, step) {
 
   const content = ui.typeAnswerTemplate.content.cloneNode(true);
   const textarea = content.querySelector("#typedAnswerInput");
-  textarea.value = state.draftAnswers[key] ?? step.starterCode ?? "";
+  textarea.value = state.draftAnswers[key] ?? "";
+  textarea.placeholder = step.starterCode || "พิมพ์คำตอบหรือโค้ดตรงนี้";
   textarea.addEventListener("input", (event) => {
     state.draftAnswers[key] = event.target.value;
+    clearFeedback();
     persist();
+
+    const draftFeedback = analyzeDraftAnswer(step, event.target.value);
+    setLiveFeedback(stage.id, step.id, draftFeedback.type, draftFeedback.text);
+    renderFeedbackPanel(stage, step);
   });
   ui.answerArea.appendChild(content);
 }
@@ -404,17 +653,22 @@ function renderLessonView() {
   ui.codePreview.textContent = step.code || "// ขั้นนี้เน้นการฟังคำอธิบายจากครู";
   ui.outputPreview.textContent = step.output || step.expectedOutput || "ผลลัพธ์จะอยู่ตรงนี้เมื่อครูยกตัวอย่าง";
   ui.stepInstruction.textContent =
-    step.instruction || "อ่านคำอธิบายให้ครบ แล้วทำตามสิ่งที่ครูบอกทีละบรรทัด";
+    step.type === "practice"
+      ? `${step.instruction || "อ่านคำอธิบายให้ครบ แล้วลองเขียนโค้ดให้ตรงเป้าหมาย"} ตัวอย่างด้านบนเป็นเพียงหนึ่งวิธีที่ถูก คำตอบอื่นที่ถูกจริงก็ผ่านได้เหมือนกัน`
+      : step.instruction || "อ่านคำอธิบายให้ครบ แล้วทำตามสิ่งที่ครูบอกทีละบรรทัด";
 
   if (step.answerReveal) {
     ui.answerReveal.classList.remove("hidden");
     ui.answerReveal.innerHTML = "";
     const label = document.createElement("strong");
-    label.textContent = "ครูเปิดคำตอบให้เห็นก่อน";
+    label.textContent = "ตัวอย่างหนึ่งที่ถูก";
+    const note = document.createElement("p");
+    note.className = "muted";
+    note.textContent = "คุณใช้วิธีอื่นที่ถูกจริงได้ ไม่จำเป็นต้องพิมพ์ให้เหมือนบรรทัดนี้ทุกตัวอักษร";
     const code = document.createElement("pre");
     code.className = "code-preview";
     code.textContent = step.answerReveal;
-    ui.answerReveal.append(label, code);
+    ui.answerReveal.append(label, note, code);
   } else {
     ui.answerReveal.classList.add("hidden");
     ui.answerReveal.innerHTML = "";
@@ -422,18 +676,18 @@ function renderLessonView() {
 
   renderAnswerArea(stage, step);
 
-  ui.feedbackPanel.className = `feedback-panel ${state.lessonFeedback.type || ""}`.trim();
-  ui.feedbackPanel.textContent =
-    state.lessonFeedback.text ||
-    (step.type === "teach"
-      ? "ขั้นนี้เน้นฟังให้เข้าใจและจำภาพของโค้ดก่อน"
-      : "เมื่อพร้อมแล้วกดส่งคำตอบ ครูจะเช็กให้ทันที");
+  renderFeedbackPanel(stage, step);
 
-  ui.primaryActionBtn.textContent = step.type === "teach" ? "ฉันเข้าใจแล้ว" : "ส่งคำตอบ";
+  ui.primaryActionBtn.disabled = runtime.answerEvaluationBusy;
+  ui.primaryActionBtn.textContent = runtime.answerEvaluationBusy
+    ? "กำลังตรวจคำตอบ..."
+    : step.type === "teach"
+      ? "ฉันเข้าใจแล้ว"
+      : "ส่งคำตอบ";
 }
 
 function renderMapView() {
-  const keyMessage = sanitizeKeys(state.apiKeys).length
+  const keyMessage = configuredKeys().length
     ? ""
     : " ยังไม่ได้ใส่ Gemini key ตอนนี้ครูสำรองในเครื่องจะสอนให้ก่อน และยังบันทึกทุกด่านไว้เหมือนเดิม";
   const message =
@@ -460,26 +714,63 @@ function render() {
   }
 }
 
-async function validateModels() {
-  const keys = sanitizeKeys(state.apiKeys);
-  if (!keys.length) return;
+async function validateModels(options = {}) {
+  const targetModels = Array.isArray(options.models) && options.models.length
+    ? MODEL_OPTIONS.filter((model) => options.models.includes(model))
+    : [...MODEL_OPTIONS];
+  const keys = configuredKeys();
 
-  ui.validateModelsBtn.disabled = true;
-  ui.validateModelsBtn.textContent = "กำลังตรวจสอบ...";
+  if (!keys.length) {
+    invalidateModelStatuses();
+    renderModelSelect();
+    renderSettingsModelList();
+    syncValidationButton();
+    return;
+  }
+
+  if (runtime.modelValidationBusy) return;
+
+  runtime.modelValidationBusy = true;
+  runtime.modelValidationTargets = targetModels;
+  runtime.modelValidationToken += 1;
+  const validationToken = runtime.modelValidationToken;
 
   for (let keyIndex = 0; keyIndex < keys.length; keyIndex += 1) {
-    for (let modelIndex = 0; modelIndex < MODEL_OPTIONS.length; modelIndex += 1) {
-      const modelName = MODEL_OPTIONS[modelIndex];
-      const result = await probeModel(keys[keyIndex], modelName);
-      state.modelStatuses[`${keyIndex}:${modelName}`] = result;
-      persist();
-      renderModelSelect();
-      renderSettings();
+    for (let modelIndex = 0; modelIndex < targetModels.length; modelIndex += 1) {
+      delete state.modelStatuses[`${keyIndex}:${targetModels[modelIndex]}`];
     }
   }
 
-  ui.validateModelsBtn.disabled = false;
-  ui.validateModelsBtn.textContent = "ตรวจสอบโมเดลตอนนี้";
+  persist();
+  syncValidationButton();
+  renderModelSelect();
+  renderSettingsModelList();
+
+  try {
+    for (let keyIndex = 0; keyIndex < keys.length; keyIndex += 1) {
+      for (let modelIndex = 0; modelIndex < targetModels.length; modelIndex += 1) {
+        if (runtime.modelValidationToken !== validationToken) return;
+
+        const modelName = targetModels[modelIndex];
+        const result = await probeModel(keys[keyIndex], modelName);
+
+        if (runtime.modelValidationToken !== validationToken) return;
+
+        state.modelStatuses[`${keyIndex}:${modelName}`] = result;
+        persist();
+        renderModelSelect();
+        renderSettingsModelList();
+      }
+    }
+  } finally {
+    if (runtime.modelValidationToken === validationToken) {
+      runtime.modelValidationBusy = false;
+      runtime.modelValidationTargets = [];
+      syncValidationButton();
+      renderModelSelect();
+      renderSettingsModelList();
+    }
+  }
 }
 
 async function ensureStagePool() {
@@ -500,12 +791,7 @@ async function ensureStagePool() {
         models: MODEL_OPTIONS,
         preferredModel: state.preferredModel,
         statusMap: state.modelStatuses,
-        onStatus: (keyIndex, modelName, value) => {
-          state.modelStatuses[`${keyIndex}:${modelName}`] = value;
-          persist();
-          renderSettings();
-          renderModelSelect();
-        },
+        onStatus: handleModelStatusUpdate,
       });
 
       state.stageCatalog.push(stage);
@@ -524,18 +810,63 @@ function removeReviewRecord(reviewSourceId) {
   state.reviewDeck = state.reviewDeck.filter((item) => item.id !== reviewSourceId);
 }
 
+function initializeNavigation() {
+  const activeStage = getCurrentStage();
+  if (state.screen === "lesson" && activeStage) {
+    history.replaceState({ screen: "map" }, "", window.location.href);
+    history.pushState({ screen: "lesson", stageId: activeStage.id }, "", window.location.href);
+    return;
+  }
+
+  history.replaceState({ screen: "map" }, "", window.location.href);
+}
+
+function exitLessonToMap({ fromHistory = false } = {}) {
+  if (state.screen !== "lesson") {
+    closeModelPicker();
+    if (history.state?.screen !== "map") {
+      history.replaceState({ screen: "map" }, "", window.location.href);
+    }
+    return;
+  }
+
+  if (state.activeStageId) {
+    resetStageProgress(state.activeStageId);
+  }
+
+  state.screen = "map";
+  state.activeStageId = null;
+  state.activeStepIndex = 0;
+  clearFeedback();
+  clearLiveFeedback();
+  closeModelPicker();
+  persist();
+  render();
+
+  if (!fromHistory && history.state?.screen === "lesson") {
+    history.back();
+    return;
+  }
+
+  if (history.state?.screen !== "map") {
+    history.replaceState({ screen: "map" }, "", window.location.href);
+  }
+}
+
 function startStage(stageId) {
   const stage = getStageById(state.stageCatalog, stageId);
   if (!stage) return;
 
-  const completed = isStageCompleted(stageId);
+  resetStageProgress(stageId);
   state.activeStageId = stageId;
-  state.activeStepIndex = completed ? 0 : state.stageAttempts[stageId]?.currentStep || 0;
+  state.activeStepIndex = 0;
   state.screen = "lesson";
   clearFeedback();
-  updateStageAttempt(stageId, { currentStep: state.activeStepIndex });
+  clearLiveFeedback();
   persist();
   render();
+  closeModelPicker();
+  history.pushState({ screen: "lesson", stageId }, "", window.location.href);
 }
 
 async function completeStage(stage) {
@@ -552,17 +883,13 @@ async function completeStage(stage) {
   state.xp += stage.rewards.xp;
   state.gems += stage.rewards.gems;
   state.hearts = Math.min(MAX_HEARTS, state.hearts + stage.rewards.hearts);
-  state.screen = "map";
-  state.activeStageId = null;
-  state.activeStepIndex = 0;
-  clearFeedback();
+  resetStageProgress(stage.id);
   updateStageAttempt(stage.id, {
     currentStep: 0,
     clears: (state.stageAttempts[stage.id]?.clears || 0) + 1,
   });
   updateCampaignMessage(`ผ่าน ${stage.title} แล้ว ได้ ${stage.rewards.xp} XP และปลดล็อกด่านถัดไป`);
-  persist();
-  render();
+  exitLessonToMap();
 
   ui.stageResultTitle.textContent = `${stage.title} ผ่านแล้ว`;
   ui.stageResultBody.textContent =
@@ -583,6 +910,7 @@ async function handlePrimaryAction() {
   if (step.type === "teach") {
     state.activeStepIndex += 1;
     clearFeedback();
+    clearLiveFeedback();
     updateStageAttempt(stage.id, { currentStep: state.activeStepIndex });
     if (state.activeStepIndex >= stage.steps.length) {
       await completeStage(stage);
@@ -595,7 +923,39 @@ async function handlePrimaryAction() {
 
   const draftKey = answerDraftKey(stage.id, step.id);
   const answer = state.draftAnswers[draftKey] || "";
-  const result = compareStepAnswer(step, answer);
+  let result = compareStepAnswer(step, answer);
+
+  if (result.requiresAiJudge && configuredKeys().length) {
+    runtime.answerEvaluationBusy = true;
+    setLiveFeedback(stage.id, step.id, "", "กำลังให้ AI ช่วยตรวจความหมายของโค้ดและความถูกต้องจริง...");
+    render();
+
+    try {
+      const aiResult = await requestAnswerEvaluation({
+        keys: configuredKeys(),
+        models: MODEL_OPTIONS,
+        preferredModel: state.preferredModel,
+        statusMap: state.modelStatuses,
+        onStatus: handleModelStatusUpdate,
+        step,
+        answer,
+      });
+
+      if (aiResult) {
+        result = {
+          correct: aiResult.correct,
+          feedback: aiResult.feedback,
+        };
+      }
+    } catch {
+      result = {
+        correct: false,
+        feedback: `${result.feedback}\nตอนนี้ AI ช่วยตัดสินเพิ่มไม่สำเร็จ ลองปรับให้ชัดขึ้นอีกนิดแล้วกดส่งใหม่`,
+      };
+    } finally {
+      runtime.answerEvaluationBusy = false;
+    }
+  }
 
   if (result.correct) {
     playSuccess();
@@ -604,6 +964,7 @@ async function handlePrimaryAction() {
     removeReviewRecord(step.reviewSourceId);
     state.activeStepIndex += 1;
     clearFeedback();
+    clearLiveFeedback();
     updateStageAttempt(stage.id, { currentStep: state.activeStepIndex });
     persist();
 
@@ -617,6 +978,7 @@ async function handlePrimaryAction() {
   }
 
   playFail();
+  clearLiveFeedback();
   const heartsBefore = state.hearts;
   state.hearts = nextHeartsAfterFailure(state.hearts, MAX_HEARTS);
   updateStageAttempt(stage.id, { mistakes: (state.stageAttempts[stage.id]?.mistakes || 0) + 1 });
@@ -662,39 +1024,67 @@ function bindEvents() {
     if (event.target.closest("button")) {
       playClick();
     }
+
+    if (runtime.modelPickerOpen && !ui.modelPicker.contains(event.target)) {
+      closeModelPicker();
+    }
   });
 
   document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && runtime.modelPickerOpen) {
+      closeModelPicker();
+      return;
+    }
+
     if (event.key === "Escape" && state.screen === "lesson") {
-      state.screen = "map";
-      state.activeStageId = null;
-      clearFeedback();
-      persist();
-      render();
+      exitLessonToMap();
+    }
+  });
+
+  window.addEventListener("popstate", (event) => {
+    if (event.state?.screen === "lesson") {
+      history.replaceState({ screen: "map" }, "", window.location.href);
+    }
+
+    if (state.screen === "lesson") {
+      exitLessonToMap({ fromHistory: true });
+      return;
+    }
+
+    if (history.state?.screen !== "map") {
+      history.replaceState({ screen: "map" }, "", window.location.href);
     }
   });
 
   ui.openProfileBtn.addEventListener("click", openProfile);
-  ui.settingsBtn.addEventListener("click", () => ui.settingsDialog.showModal());
+  ui.modelPickerButton.addEventListener("click", () => {
+    setModelPickerOpen(!runtime.modelPickerOpen);
+  });
+  ui.settingsBtn.addEventListener("click", () => {
+    closeModelPicker();
+    ui.settingsDialog.showModal();
+  });
   ui.primaryActionBtn.addEventListener("click", async () => {
     await handlePrimaryAction();
   });
-  ui.modelSelect.addEventListener("change", (event) => {
-    state.preferredModel = event.target.value;
-    persist();
+  ui.lessonBackBtn.addEventListener("click", () => {
+    exitLessonToMap();
   });
   ui.addKeyRowBtn.addEventListener("click", () => {
     state.apiKeys.push("");
+    invalidateModelStatuses();
     renderSettings();
-    persist();
+    renderModelSelect();
   });
   ui.bulkPasteBtn.addEventListener("click", () => ui.bulkPasteDialog.showModal());
   ui.bulkPasteApplyBtn.addEventListener("click", () => {
     const keys = parseBulkKeys(ui.bulkPasteInput.value);
     if (keys.length) {
       state.apiKeys = [...new Set([...sanitizeKeys(state.apiKeys), ...keys])];
-      persist();
+      invalidateModelStatuses();
       renderSettings();
+      renderModelSelect();
+      void validateModels();
     }
     ui.bulkPasteInput.value = "";
     ui.bulkPasteDialog.close();
@@ -706,6 +1096,9 @@ function bindEvents() {
     persist();
     render();
     ui.settingsDialog.close();
+    if (configuredKeys().length) {
+      void validateModels();
+    }
   });
   ui.profileSaveBtn.addEventListener("click", async (event) => {
     event.preventDefault();
@@ -752,6 +1145,7 @@ window.render_game_to_text = () =>
 
 window.advanceTime = () => {};
 
+initializeNavigation();
 bindEvents();
 render();
 
@@ -761,6 +1155,6 @@ if (!state.askedForProfile) {
 
 ensureStagePool();
 
-if (sanitizeKeys(state.apiKeys).length) {
-  validateModels();
+if (configuredKeys().length) {
+  void validateModels();
 }

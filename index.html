@@ -33,10 +33,26 @@
             <div class="resource-pill hearts"><span>❤</span><strong id="heartCount">7</strong></div>
             <div class="resource-pill"><span>◆</span><strong id="gemCount">0</strong></div>
             <div class="resource-pill"><span>LV</span><strong id="levelLabel">1</strong></div>
-            <label class="model-picker">
-              <span>AI Model</span>
-              <select id="modelSelect"></select>
-            </label>
+            <div id="modelPicker" class="model-picker">
+              <span class="model-picker-label">AI Model</span>
+              <button
+                id="modelPickerButton"
+                class="model-picker-button"
+                type="button"
+                aria-haspopup="listbox"
+                aria-expanded="false"
+              >
+                <span class="model-picker-current">
+                  <span id="modelPickerStatusDot" class="model-status-dot"></span>
+                  <span class="model-picker-copy">
+                    <strong id="modelPickerValue">gemini-2.5-flash</strong>
+                    <small id="modelPickerStatusText">กำลังตรวจสอบโมเดล</small>
+                  </span>
+                </span>
+                <span class="model-picker-caret" aria-hidden="true">▾</span>
+              </button>
+              <div id="modelPickerMenu" class="model-picker-menu hidden" role="listbox" aria-label="รายการโมเดล"></div>
+            </div>
             <button id="settingsBtn" class="icon-button" type="button" aria-label="ตั้งค่า">⚙</button>
           </div>
         </header>
@@ -91,6 +107,7 @@
                 <div id="lessonProgressFill" class="progress-fill"></div>
               </div>
             </div>
+            <button id="lessonBackBtn" class="ghost-button lesson-back-button" type="button">← กลับหน้าแผนที่</button>
           </div>
         </header>
 
@@ -140,7 +157,7 @@
         </main>
 
         <footer class="lesson-footer">
-          <p>โหมดโฟกัส: ใช้ `Esc` เพื่อกลับหน้าแผนที่</p>
+          <p>โหมดโฟกัส: ใช้ Esc, ปุ่ม Back ของมือถือ หรือปุ่มย้อนกลับเพื่อกลับหน้าแผนที่</p>
           <button id="primaryActionBtn" class="primary-button" type="button">ต่อไป</button>
         </footer>
       </section>
