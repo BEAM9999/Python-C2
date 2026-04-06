@@ -1,6 +1,7 @@
 import { DEFAULT_AVATAR, MAX_HEARTS, MODEL_OPTIONS, STAGE_BUFFER } from "./data.js";
 import { playClick, playFail, playSuccess } from "./audio.js";
 import { probeModel, requestAnswerEvaluation } from "./gemini.js";
+import { cancelSpeech, initializeSpeech, isSpeechSupported, refreshSpeechVoices, speakText } from "./speech.js";
 import {
   analyzeDraftAnswer,
   buildReviewRecord,
@@ -17,6 +18,7 @@ const DEFAULT_STATE = {
   profileName: "",
   profileAvatar: DEFAULT_AVATAR,
   playerId: "",
+  curriculumSeed: createCurriculumSeed(),
   askedForProfile: false,
   screen: "map",
   hearts: MAX_HEARTS,
@@ -39,18 +41,81 @@ const DEFAULT_STATE = {
   generationBusy: false,
   generationError: "",
   lastCampaignMessage: "",
+  speechSettingsVersion: 3,
+  speechAutoRead: false,
+  speechVoiceFilter: "all",
+  speechVoiceURI: "",
+  speechRate: 1,
+  speechPitch: 1,
+  speechVolume: 1,
 };
+
+function createCurriculumSeed() {
+  return Math.random().toString(36).slice(2, 10);
+}
 
 function createPlayerId() {
   return `ID-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
 }
 
+function normalizeBoundedNumber(value, min, max, fallback) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return fallback;
+  return Math.min(max, Math.max(min, numeric));
+}
+
+function normalizeSpeechFilter(value) {
+  return ["all", "female", "male"].includes(value) ? value : "all";
+}
+
+function detectSpeechBrowserProfile() {
+  const userAgent = String(navigator?.userAgent || "").toLowerCase();
+  if (userAgent.includes("edg/")) return "edge";
+  if (userAgent.includes("chrome/") || userAgent.includes("crios/")) return "chrome";
+  return "other";
+}
+
+function matchesVoiceKeywords(voice, keywords) {
+  const sample = `${String(voice?.name || "").toLowerCase()} ${String(voice?.voiceURI || "").toLowerCase()}`;
+  return keywords.every((keyword) => sample.includes(keyword));
+}
+
+function browserDefaultThaiVoice(voices) {
+  const browserProfile = detectSpeechBrowserProfile();
+  const profiles = {
+    chrome: [
+      ["microsoft", "pattara", "thai"],
+      ["pattara", "thai"],
+      ["pattara"],
+    ],
+    edge: [
+      ["microsoft", "นิวัฒน์", "online"],
+      ["microsoft", "niwat", "online"],
+      ["นิวัฒน์", "online"],
+      ["niwat", "online"],
+      ["นิวัฒน์"],
+      ["niwat"],
+    ],
+    other: [],
+  };
+
+  const preferredPatterns = profiles[browserProfile] || [];
+  for (let index = 0; index < preferredPatterns.length; index += 1) {
+    const match = voices.find((voice) => matchesVoiceKeywords(voice, preferredPatterns[index]));
+    if (match) return match;
+  }
+
+  return null;
+}
+
 function migrateState(rawState) {
   const base = { ...DEFAULT_STATE, ...(rawState || {}) };
+  const shouldResetSpeechDefaults = Number(base.speechSettingsVersion || 0) < 3;
   return {
     ...base,
     profileAvatar: base.profileAvatar || DEFAULT_AVATAR,
     playerId: base.playerId || createPlayerId(),
+    curriculumSeed: base.curriculumSeed || createCurriculumSeed(),
     hearts: Math.min(MAX_HEARTS, Math.max(1, Number(base.hearts) || MAX_HEARTS)),
     gems: Number(base.gems) || 0,
     xp: Number(base.xp) || 0,
@@ -76,6 +141,13 @@ function migrateState(rawState) {
     generationBusy: false,
     generationError: "",
     lastCampaignMessage: base.lastCampaignMessage || "",
+    speechSettingsVersion: 3,
+    speechAutoRead: shouldResetSpeechDefaults ? false : typeof base.speechAutoRead === "boolean" ? base.speechAutoRead : false,
+    speechVoiceFilter: shouldResetSpeechDefaults ? "all" : normalizeSpeechFilter(base.speechVoiceFilter),
+    speechVoiceURI: shouldResetSpeechDefaults ? "" : typeof base.speechVoiceURI === "string" ? base.speechVoiceURI : "",
+    speechRate: normalizeBoundedNumber(base.speechRate, 0.75, 1.25, 1),
+    speechPitch: normalizeBoundedNumber(base.speechPitch, 0.8, 1.2, 1),
+    speechVolume: normalizeBoundedNumber(base.speechVolume, 0.4, 1, 1),
     screen: base.screen === "lesson" ? "lesson" : "map",
   };
 }
@@ -87,8 +159,15 @@ const runtime = {
   modelValidationBusy: false,
   modelValidationTargets: [],
   modelValidationToken: 0,
+  generationToken: 0,
   answerEvaluationBusy: false,
   liveFeedback: { stageId: null, stepId: null, type: "", text: "" },
+  speechSupported: isSpeechSupported(),
+  speechVoices: [],
+  speechActive: false,
+  speechCurrentKey: "",
+  speechStatusText: "",
+  speechLastAutoKey: "",
 };
 
 const ui = {
@@ -122,6 +201,8 @@ const ui = {
   lessonProgressFill: document.querySelector("#lessonProgressFill"),
   lessonBackBtn: document.querySelector("#lessonBackBtn"),
   lessonDifficulty: document.querySelector("#lessonDifficulty"),
+  speakLessonBtn: document.querySelector("#speakLessonBtn"),
+  speechStatus: document.querySelector("#speechStatus"),
   stepTitle: document.querySelector("#stepTitle"),
   teacherSpeech: document.querySelector("#teacherSpeech"),
   teacherBullets: document.querySelector("#teacherBullets"),
@@ -144,8 +225,23 @@ const ui = {
   addKeyRowBtn: document.querySelector("#addKeyRowBtn"),
   bulkPasteBtn: document.querySelector("#bulkPasteBtn"),
   settingsModelList: document.querySelector("#settingsModelList"),
+  speechSupportBadge: document.querySelector("#speechSupportBadge"),
+  speechSupportText: document.querySelector("#speechSupportText"),
+  speechAutoReadToggle: document.querySelector("#speechAutoReadToggle"),
+  speechVoiceFilterSelect: document.querySelector("#speechVoiceFilterSelect"),
+  speechVoiceSelect: document.querySelector("#speechVoiceSelect"),
+  speechRateInput: document.querySelector("#speechRateInput"),
+  speechRateValue: document.querySelector("#speechRateValue"),
+  speechPitchInput: document.querySelector("#speechPitchInput"),
+  speechPitchValue: document.querySelector("#speechPitchValue"),
+  speechVolumeInput: document.querySelector("#speechVolumeInput"),
+  speechVolumeValue: document.querySelector("#speechVolumeValue"),
+  previewVoiceBtn: document.querySelector("#previewVoiceBtn"),
+  stopVoiceBtn: document.querySelector("#stopVoiceBtn"),
+  refreshVoicesBtn: document.querySelector("#refreshVoicesBtn"),
   validateModelsBtn: document.querySelector("#validateModelsBtn"),
   saveSettingsBtn: document.querySelector("#saveSettingsBtn"),
+  resetLearningBtn: document.querySelector("#resetLearningBtn"),
   profileNameInput: document.querySelector("#profileNameInput"),
   profileAvatarInput: document.querySelector("#profileAvatarInput"),
   profileSaveBtn: document.querySelector("#profileSaveBtn"),
@@ -194,6 +290,418 @@ function setLiveFeedback(stageId, stepId, type, text) {
 
 function clearLiveFeedback() {
   runtime.liveFeedback = { stageId: null, stepId: null, type: "", text: "" };
+}
+
+function voiceGenderLabel(gender) {
+  if (gender === "female") return "เสียงผู้หญิงไทย";
+  if (gender === "male") return "เสียงผู้ชายไทย";
+  return "เสียงไทย";
+}
+
+function isThaiVoiceSummary(voice) {
+  const lang = String(voice?.lang || "").trim().toLowerCase();
+  const name = String(voice?.name || "").trim().toLowerCase();
+  return lang.startsWith("th") || /\bthai\b|ภาษาไทย|premwadee|niwat/.test(name);
+}
+
+function thaiSpeechVoices() {
+  return runtime.speechVoices.filter((voice) => isThaiVoiceSummary(voice));
+}
+
+function speechVoiceScore(voice) {
+  let score = 0;
+
+  if (/^th-TH$/i.test(voice.lang || "")) score += 120;
+  else if (/^th/i.test(voice.lang || "")) score += 100;
+
+  if (voice.default) score += 12;
+  if (voice.localService) score += 8;
+
+  if (voice.gender === "female") score += 18;
+  if (voice.gender === "male") score += 8;
+
+  return score;
+}
+
+function sortedSpeechVoices() {
+  const browserPreferredVoice = browserDefaultThaiVoice(thaiSpeechVoices());
+  return [...thaiSpeechVoices()].sort((left, right) => {
+    if (browserPreferredVoice) {
+      if (left.voiceURI === browserPreferredVoice.voiceURI) return -1;
+      if (right.voiceURI === browserPreferredVoice.voiceURI) return 1;
+    }
+
+    const scoreDiff = speechVoiceScore(right) - speechVoiceScore(left);
+    if (scoreDiff !== 0) return scoreDiff;
+    return `${left.name} ${left.lang}`.localeCompare(`${right.name} ${right.lang}`);
+  });
+}
+
+function filteredSpeechVoices() {
+  const voices = sortedSpeechVoices();
+  if (state.speechVoiceFilter === "all") return voices;
+  return voices.filter((voice) => voice.gender === state.speechVoiceFilter);
+}
+
+function findSpeechVoiceByURI(voiceURI) {
+  return sortedSpeechVoices().find((voice) => voice.voiceURI === voiceURI) || null;
+}
+
+function preferredSpeechVoice() {
+  const voice = findSpeechVoiceByURI(state.speechVoiceURI);
+  if (!voice) return null;
+  if (state.speechVoiceFilter === "all") return voice;
+  return voice.gender === state.speechVoiceFilter ? voice : null;
+}
+
+function ensureSpeechVoiceSelection(options = {}) {
+  const voices = sortedSpeechVoices();
+  if (!voices.length) return null;
+
+  const availableVoices = filteredSpeechVoices();
+  const currentVoice = preferredSpeechVoice();
+  if (currentVoice) return currentVoice;
+
+  const browserPreferred = browserDefaultThaiVoice(voices);
+  const filteredVoice = state.speechVoiceFilter === "all"
+    ? browserPreferred || voices[0]
+    : availableVoices[0] || null;
+  if (filteredVoice) {
+    state.speechVoiceURI = filteredVoice.voiceURI;
+    if (options.persistState) {
+      persist();
+    }
+  }
+
+  return filteredVoice || null;
+}
+
+function speechSupportSummary() {
+  if (!runtime.speechSupported) {
+    return {
+      tone: "error",
+      label: "ไม่รองรับ",
+      text: "เบราว์เซอร์นี้ยังไม่รองรับระบบเสียงอ่านฟรีแบบในเครื่อง จึงยังใช้ระบบเสียงภาษาไทยของเว็บนี้ไม่ได้",
+    };
+  }
+
+  if (!runtime.speechVoices.length) {
+    return {
+      tone: "checking",
+      label: "กำลังโหลด",
+      text: "กำลังขอรายการเสียงจากเบราว์เซอร์และ Windows อยู่ เพื่อคัดเฉพาะเสียงภาษาไทยให้ ถ้ายังไม่ขึ้นให้กดรีเฟรชรายการเสียง",
+    };
+  }
+
+  if (!thaiSpeechVoices().length) {
+    return {
+      tone: "error",
+      label: "ไม่พบเสียงไทย",
+      text: "เครื่องนี้ยังไม่พบเสียงพูดภาษาไทยในระบบ จึงยังไม่มีโมเดลเสียงภาษาไทยให้เลือก ลองติดตั้งเสียงไทยของ Windows แล้วกดรีเฟรชรายการเสียง",
+    };
+  }
+
+  if (!filteredSpeechVoices().length) {
+    return {
+      tone: "error",
+      label: "ยังไม่มีเสียงในหมวดนี้",
+      text:
+        state.speechVoiceFilter === "female"
+          ? "ตอนนี้ยังไม่พบเสียงผู้หญิงภาษาไทยในเครื่อง ลองเปลี่ยนเป็นเสียงผู้ชายไทยหรือเสียงไทยทั้งหมด"
+          : state.speechVoiceFilter === "male"
+            ? "ตอนนี้ยังไม่พบเสียงผู้ชายภาษาไทยในเครื่อง ลองเปลี่ยนเป็นเสียงผู้หญิงไทยหรือเสียงไทยทั้งหมด"
+            : "ตอนนี้ยังไม่พบโมเดลเสียงไทยที่ใช้ได้",
+    };
+  }
+
+  const currentVoice = ensureSpeechVoiceSelection();
+  return {
+    tone: "ready",
+    label: "พร้อมใช้",
+    text:
+      currentVoice
+        ? `ตอนนี้พร้อมใช้โมเดลเสียงภาษาไทย ${currentVoice.name} (${voiceGenderLabel(currentVoice.gender)}) ค่าเริ่มต้นจะไม่อ่านเอง และ Chrome/Google กับ Edge จะพยายามเลือกเสียงเริ่มต้นตามที่กำหนดไว้ก่อน`
+        : "ระบบเสียงไทยพร้อมแล้ว แต่ยังไม่ได้เลือกเสียง",
+  };
+}
+
+function currentSpeechStepKey(stage, step) {
+  if (!stage || !step) return "";
+  return `${stage.id}:${step.id}:${state.activeStepIndex}`;
+}
+
+function buildLessonNarration(stage, step) {
+  const parts = [
+    `ด่าน ${String(stage.order).padStart(3, "0")} ${stage.title}`,
+    `ขั้นนี้คือ ${step.title}`,
+    buildTeacherSpeech(stage, step),
+  ];
+
+  if (Array.isArray(step.bulletPoints) && step.bulletPoints.length) {
+    parts.push(`สรุปสั้น ๆ ${step.bulletPoints.join(". ")}`);
+  }
+
+  if (step.memoryHook) {
+    parts.push(`จำง่าย ๆ ว่า ${step.memoryHook}`);
+  }
+
+  if (step.type !== "teach" && step.instruction) {
+    parts.push(`โจทย์ของขั้นนี้คือ ${step.instruction}`);
+  }
+
+  return parts.filter(Boolean).join("\n\n");
+}
+
+function renderSpeechControls() {
+  if (!ui.speakLessonBtn || !ui.speechStatus) return;
+
+  const support = speechSupportSummary();
+  const stage = getCurrentStage();
+  const step = getCurrentStep(stage, state.activeStepIndex);
+  const stepKey = currentSpeechStepKey(stage, step);
+  const isCurrentStepSpeaking = runtime.speechActive && runtime.speechCurrentKey === stepKey;
+
+  ui.speakLessonBtn.disabled = !runtime.speechSupported || !ensureSpeechVoiceSelection() || !stage || !step;
+  ui.speakLessonBtn.setAttribute("aria-pressed", String(isCurrentStepSpeaking));
+  ui.speakLessonBtn.textContent = isCurrentStepSpeaking ? "หยุดเสียงที่กำลังอ่าน" : "อ่านด้วยเสียง AI ไทย";
+  ui.speechStatus.textContent = runtime.speechStatusText || support.text;
+}
+
+function renderSpeechSettings() {
+  if (!ui.speechSupportBadge) return;
+
+  const support = speechSupportSummary();
+  const filteredVoicesList = filteredSpeechVoices();
+  const selectedVoice = ensureSpeechVoiceSelection();
+
+  ui.speechSupportBadge.className = `status-badge tone-${support.tone}`;
+  ui.speechSupportBadge.textContent = support.label;
+  ui.speechSupportText.textContent = support.text;
+
+  ui.speechAutoReadToggle.checked = state.speechAutoRead;
+  ui.speechAutoReadToggle.disabled = !runtime.speechSupported;
+
+  ui.speechVoiceFilterSelect.value = state.speechVoiceFilter;
+  ui.speechVoiceFilterSelect.disabled = !runtime.speechSupported || !thaiSpeechVoices().length;
+
+  ui.speechVoiceSelect.innerHTML = "";
+
+  if (!runtime.speechSupported) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "เบราว์เซอร์นี้ยังไม่รองรับเสียงอ่านฟรี";
+    ui.speechVoiceSelect.appendChild(option);
+  } else if (!filteredVoicesList.length) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = thaiSpeechVoices().length
+      ? state.speechVoiceFilter === "female"
+        ? "ยังไม่พบเสียงผู้หญิงไทย ลองเปลี่ยนเป็นเสียงผู้ชายไทยหรือเสียงไทยทั้งหมด"
+        : state.speechVoiceFilter === "male"
+          ? "ยังไม่พบเสียงผู้ชายไทย ลองเปลี่ยนเป็นเสียงผู้หญิงไทยหรือเสียงไทยทั้งหมด"
+          : "ยังไม่พบโมเดลเสียงไทยที่ใช้ได้ ลองรีเฟรชรายการเสียง"
+      : "กำลังโหลดรายการเสียงไทย...";
+    ui.speechVoiceSelect.appendChild(option);
+  } else {
+    filteredVoicesList.forEach((voice) => {
+      const option = document.createElement("option");
+      option.value = voice.voiceURI;
+      option.textContent = `${voice.name} • ${voice.lang} • ${voiceGenderLabel(voice.gender)}`;
+      ui.speechVoiceSelect.appendChild(option);
+    });
+  }
+
+  ui.speechVoiceSelect.disabled = !runtime.speechSupported || !filteredVoicesList.length;
+  ui.speechVoiceSelect.value = filteredVoicesList.some((voice) => voice.voiceURI === state.speechVoiceURI)
+    ? state.speechVoiceURI
+    : filteredVoicesList[0]?.voiceURI || "";
+
+  ui.speechRateInput.value = String(state.speechRate);
+  ui.speechPitchInput.value = String(state.speechPitch);
+  ui.speechVolumeInput.value = String(state.speechVolume);
+  ui.speechRateValue.textContent = `${state.speechRate.toFixed(2)}x`;
+  ui.speechPitchValue.textContent = `${state.speechPitch.toFixed(2)}x`;
+  ui.speechVolumeValue.textContent = `${Math.round(state.speechVolume * 100)}%`;
+
+  const canPlay = runtime.speechSupported && Boolean(selectedVoice) && Boolean(filteredVoicesList.length);
+  ui.previewVoiceBtn.disabled = !canPlay;
+  ui.stopVoiceBtn.disabled = !runtime.speechActive;
+  ui.refreshVoicesBtn.disabled = !runtime.speechSupported;
+}
+
+function stopSpeechPlayback(statusText = "หยุดเสียงแล้ว") {
+  cancelSpeech();
+  runtime.speechActive = false;
+  runtime.speechCurrentKey = "";
+  runtime.speechStatusText = statusText;
+  renderSpeechControls();
+  renderSpeechSettings();
+}
+
+function speakWithCurrentVoice(text, speechKey, statusPrefix) {
+  if (!runtime.speechSupported) {
+    runtime.speechStatusText = "เบราว์เซอร์นี้ยังไม่รองรับระบบเสียงอ่านภาษาไทยฟรี";
+    renderSpeechControls();
+    renderSpeechSettings();
+    return false;
+  }
+
+  const voice = ensureSpeechVoiceSelection({ persistState: !state.speechVoiceURI });
+  if (!voice) {
+    runtime.speechStatusText = "ยังไม่พบเสียงภาษาไทยในเครื่อง ลองติดตั้งเสียงไทยของ Windows แล้วกดรีเฟรชรายการเสียงอีกครั้ง";
+    renderSpeechControls();
+    renderSpeechSettings();
+    return false;
+  }
+
+  const started = speakText({
+    text,
+    voiceURI: voice.voiceURI,
+    rate: state.speechRate,
+    pitch: state.speechPitch,
+    volume: state.speechVolume,
+    onStart: () => {
+      runtime.speechActive = true;
+      runtime.speechCurrentKey = speechKey;
+      runtime.speechStatusText = `${statusPrefix}ด้วยเสียง ${voice.name}`;
+      renderSpeechControls();
+      renderSpeechSettings();
+    },
+    onEnd: () => {
+      if (runtime.speechCurrentKey !== speechKey) return;
+      runtime.speechActive = false;
+      runtime.speechCurrentKey = "";
+      runtime.speechStatusText = `อ่านจบแล้วด้วยเสียง ${voice.name}`;
+      renderSpeechControls();
+      renderSpeechSettings();
+    },
+    onError: () => {
+      if (runtime.speechCurrentKey !== speechKey) return;
+      runtime.speechActive = false;
+      runtime.speechCurrentKey = "";
+      runtime.speechStatusText = "เริ่มอ่านเสียงไม่สำเร็จ ลองเปลี่ยนเสียงหรือกดอ่านใหม่อีกครั้ง";
+      renderSpeechControls();
+      renderSpeechSettings();
+    },
+  });
+
+  if (!started) {
+    runtime.speechStatusText = "ยังไม่มีข้อความให้อ่านในขั้นนี้";
+    renderSpeechControls();
+    renderSpeechSettings();
+  }
+
+  return started;
+}
+
+function speakCurrentLesson(stage, step, options = {}) {
+  const speechKey = currentSpeechStepKey(stage, step);
+  const narration = buildLessonNarration(stage, step);
+  return speakWithCurrentVoice(narration, speechKey, options.statusPrefix || "กำลังอ่านคำอธิบาย ");
+}
+
+function maybeAutoSpeakLesson(stage, step) {
+  if (!state.speechAutoRead || state.screen !== "lesson") return;
+
+  const speechKey = currentSpeechStepKey(stage, step);
+  if (!speechKey || runtime.speechLastAutoKey === speechKey) return;
+
+  const started = speakCurrentLesson(stage, step, { statusPrefix: "กำลังอ่านอัตโนมัติ " });
+  if (started) {
+    runtime.speechLastAutoKey = speechKey;
+  }
+}
+
+function handleSpeechVoicesChanged(voices) {
+  runtime.speechVoices = Array.isArray(voices) ? voices : [];
+  ensureSpeechVoiceSelection({ persistState: true });
+  renderSpeechControls();
+  renderSpeechSettings();
+
+  const stage = getCurrentStage();
+  const step = getCurrentStep(stage, state.activeStepIndex);
+  if (stage && step) {
+    maybeAutoSpeakLesson(stage, step);
+  }
+}
+
+function normalizedSnippet(value) {
+  return (value || "").replace(/\r\n/g, "\n").trim();
+}
+
+function sameSnippet(left, right) {
+  return normalizedSnippet(left) === normalizedSnippet(right);
+}
+
+function looksLikeCodePreview(value) {
+  const text = normalizedSnippet(value);
+  if (!text) return false;
+
+  const firstLine = text.split("\n").map((line) => line.trim()).find(Boolean) || "";
+  return (
+    /^https?:\/\//i.test(firstLine) ||
+    /^(print|input|if|elif|else:|for|while|def|class|with|assert|from|import|python\b|py\b|pip\b|\.venv\\|[A-Za-z_][A-Za-z0-9_]*\s*=|[A-Za-z_][A-Za-z0-9_]*\(|[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*\()/.test(firstLine) ||
+    /[=(){}\[\]]/.test(text)
+  );
+}
+
+function looksLikeOutputPreview(value) {
+  const text = normalizedSnippet(value);
+  if (!text) return false;
+  if (text.length > 240) return false;
+  if (/^(คำอธิบาย|อธิบาย|โจทย์|ขั้นนี้|ให้พิมพ์|มอง|ดู|ลอง|ครู|หมายความ)/.test(text)) {
+    return false;
+  }
+  return true;
+}
+
+function selectCodePreview(step) {
+  const candidates = [step.code, step.answerReveal, step.expectedAnswer, step.starterCode];
+  return candidates.find((candidate) => looksLikeCodePreview(candidate)) || "";
+}
+
+function selectOutputPreview(step) {
+  const candidates = [step.output, step.expectedOutput];
+  return candidates.find((candidate) => looksLikeOutputPreview(candidate)) || "";
+}
+
+function buildTeacherSpeech(stage, step) {
+  const previewCode = selectCodePreview(step);
+  const previewOutput = selectOutputPreview(step);
+  const baseExplanation = (step.explanation || step.teacherPrompt || stage.intro || "").trim();
+  const parts = [];
+
+  if (baseExplanation) {
+    parts.push(baseExplanation);
+  }
+
+  if (step.type === "teach") {
+    parts.push("ขั้นนี้ยังไม่ใช่ช่วงสอบหรือช่วงรีบพิมพ์ สิ่งสำคัญที่สุดคือมองให้ออกว่าคำสั่งส่วนไหนทำหน้าที่อะไรและเชื่อมกับผลลัพธ์อย่างไร");
+  } else if (step.type === "command") {
+    parts.push("ขั้นนี้เป็นการพิมพ์คำสั่งจริง จึงค่อย ๆ ดูรูปทรงของคำสั่งทีละช่วงได้เลย โดยเฉพาะขีด วงเล็บ และช่องว่างที่จำเป็น");
+  } else if (step.type === "choice") {
+    parts.push("ขั้นนี้ไม่ได้วัดความเร็ว แต่กำลังฝึกตาให้แยกออกว่าโค้ดแบบไหนหน้าตาถูกต้องหรือสื่อความหมายได้ตรงโจทย์");
+  } else {
+    parts.push("ขั้นนี้ให้ดูตัวอย่างก่อนแล้วค่อยพิมพ์ตามเป้าหมายของโจทย์ ไม่จำเป็นต้องรีบและไม่จำเป็นต้องเหมือนตัวอย่างทุกตัวอักษรถ้าความหมายยังถูกต้อง");
+  }
+
+  if (previewCode) {
+    parts.push("ช่องตัวอย่างโค้ดทางขวาเอาไว้ดูรูปทรงของโค้ดหรือคำสั่ง ไม่ใช่พื้นที่อธิบายทฤษฎี ถ้ายังงงให้เทียบทีละส่วนว่าชื่อคำสั่ง วงเล็บ ข้อความ และตัวแปรอยู่ตรงไหน");
+  }
+
+  if (previewOutput) {
+    parts.push("ช่องผลลัพธ์ที่ควรเห็นเอาไว้บอกภาพปลายทางว่าเมื่อรันตัวอย่างแล้วหน้าจอควรออกมาแบบไหน ให้ค่อย ๆ เชื่อมจากโค้ดด้านขวาไปสู่ผลลัพธ์ทีละบรรทัด");
+  }
+
+  if (step.correctionFocus) {
+    parts.push(`จุดที่มือใหม่มักสะดุดในขั้นนี้คือ ${step.correctionFocus}`);
+  }
+
+  if (step.instruction && step.type !== "teach") {
+    parts.push(`เป้าหมายของขั้นนี้คือ ${step.instruction}`);
+  }
+
+  return parts.filter(Boolean).join("\n\n");
 }
 
 function isStageCompleted(stageId) {
@@ -451,8 +959,8 @@ function renderSettingsModelList() {
 
 function getFallbackFeedback(step) {
   return step.type === "teach"
-    ? "ขั้นนี้เน้นฟังให้เข้าใจและจำภาพของโค้ดก่อน"
-    : "เมื่อพร้อมแล้วกดส่งคำตอบ ครูจะเช็กให้ทันที";
+    ? "ขั้นนี้เน้นทำความเข้าใจภาพรวมก่อน ยังไม่ต้องรีบตอบหรือรีบจำทุกอย่างในครั้งเดียว"
+    : "ค่อย ๆ ดูตัวอย่างด้านขวาแล้วทำตามโจทย์ได้เลย ถ้าพร้อมเมื่อไรค่อยกดส่งคำตอบ";
 }
 
 function renderFeedbackPanel(stage, step) {
@@ -489,6 +997,7 @@ function getDifficultyLabel(stage) {
 function renderSettings() {
   renderApiKeyList();
   renderSettingsModelList();
+  renderSpeechSettings();
   syncValidationButton();
 }
 
@@ -647,24 +1156,27 @@ function renderLessonView() {
   ui.lessonProgressFill.style.width = `${Math.round(((state.activeStepIndex + 1) / stage.steps.length) * 100)}%`;
   ui.lessonDifficulty.textContent = getDifficultyLabel(stage);
   ui.stepTitle.textContent = step.title;
-  ui.teacherSpeech.textContent = step.teacherPrompt || stage.intro;
+  const codePreviewText = selectCodePreview(step);
+  const outputPreviewText = selectOutputPreview(step);
+
+  ui.teacherSpeech.textContent = buildTeacherSpeech(stage, step);
   ui.memoryHook.textContent = step.memoryHook || stage.intro;
   renderTeacherBullets(step);
-  ui.codePreview.textContent = step.code || "// ขั้นนี้เน้นการฟังคำอธิบายจากครู";
-  ui.outputPreview.textContent = step.output || step.expectedOutput || "ผลลัพธ์จะอยู่ตรงนี้เมื่อครูยกตัวอย่าง";
+  ui.codePreview.textContent = codePreviewText || "// ช่องนี้ใช้แสดงตัวอย่างโค้ดหรือคำสั่งของขั้นนี้";
+  ui.outputPreview.textContent = outputPreviewText || "เมื่อมีตัวอย่าง โค้ดด้านซ้ายจะเชื่อมกับผลลัพธ์ตรงนี้";
   ui.stepInstruction.textContent =
     step.type === "practice"
-      ? `${step.instruction || "อ่านคำอธิบายให้ครบ แล้วลองเขียนโค้ดให้ตรงเป้าหมาย"} ตัวอย่างด้านบนเป็นเพียงหนึ่งวิธีที่ถูก คำตอบอื่นที่ถูกจริงก็ผ่านได้เหมือนกัน`
+      ? `${step.instruction || "อ่านคำอธิบายให้ครบ แล้วลองเขียนโค้ดให้ตรงเป้าหมาย"} ทำช้า ๆ ได้เลย ตัวอย่างด้านบนเป็นเพียงหนึ่งวิธีที่ถูก คำตอบอื่นที่ถูกจริงก็ผ่านได้เหมือนกัน`
       : step.instruction || "อ่านคำอธิบายให้ครบ แล้วทำตามสิ่งที่ครูบอกทีละบรรทัด";
 
-  if (step.answerReveal) {
+  if (step.answerReveal && !sameSnippet(step.answerReveal, codePreviewText)) {
     ui.answerReveal.classList.remove("hidden");
     ui.answerReveal.innerHTML = "";
     const label = document.createElement("strong");
-    label.textContent = "ตัวอย่างหนึ่งที่ถูก";
+    label.textContent = "เฉลยตัวอย่างอีกแบบหนึ่ง";
     const note = document.createElement("p");
     note.className = "muted";
-    note.textContent = "คุณใช้วิธีอื่นที่ถูกจริงได้ ไม่จำเป็นต้องพิมพ์ให้เหมือนบรรทัดนี้ทุกตัวอักษร";
+    note.textContent = "ถ้าตัวอย่างด้านบนยังไม่พอ ดูบล็อกนี้เพิ่มได้ คุณยังใช้วิธีอื่นที่ถูกจริงได้ ไม่จำเป็นต้องพิมพ์ให้เหมือนบรรทัดนี้ทุกตัวอักษร";
     const code = document.createElement("pre");
     code.className = "code-preview";
     code.textContent = step.answerReveal;
@@ -684,6 +1196,9 @@ function renderLessonView() {
     : step.type === "teach"
       ? "ฉันเข้าใจแล้ว"
       : "ส่งคำตอบ";
+
+  renderSpeechControls();
+  maybeAutoSpeakLesson(stage, step);
 }
 
 function renderMapView() {
@@ -696,7 +1211,7 @@ function renderMapView() {
       : state.generationError
         ? state.generationError
         : state.lastCampaignMessage ||
-          `เลือกด่านที่อยากเล่นได้เลย ด่านใหม่จะถูกสร้างต่อจากสิ่งที่คุณเคยเรียนมา${keyMessage}`;
+          `เลือกด่านที่อยากเล่นได้เลย ครูจะค่อย ๆ ปูพื้นฐานให้ช้าและซ้ำพอสำหรับมือใหม่ ด่านใหม่จะถูกสร้างต่อจากสิ่งที่คุณเคยเรียนมา${keyMessage}`;
   ui.campaignStatus.textContent = message;
   renderStageGrid();
 }
@@ -711,6 +1226,7 @@ function render() {
     renderLessonView();
   } else {
     renderMapView();
+    renderSpeechControls();
   }
 }
 
@@ -777,12 +1293,16 @@ async function ensureStagePool() {
   const targetCount = Math.max(STAGE_BUFFER, state.completedStageIds.length + STAGE_BUFFER);
   if (state.generationBusy || state.stageCatalog.length >= targetCount) return;
 
+  const generationToken = runtime.generationToken + 1;
+  runtime.generationToken = generationToken;
   state.generationBusy = true;
   state.generationError = "";
   render();
 
   try {
     while (state.stageCatalog.length < targetCount) {
+      if (runtime.generationToken !== generationToken) return;
+
       const stage = await createStage({
         order: state.stageCatalog.length + 1,
         reviewDeck: state.reviewDeck,
@@ -792,16 +1312,23 @@ async function ensureStagePool() {
         preferredModel: state.preferredModel,
         statusMap: state.modelStatuses,
         onStatus: handleModelStatusUpdate,
+        curriculumSeed: state.curriculumSeed,
       });
+
+      if (runtime.generationToken !== generationToken) return;
 
       state.stageCatalog.push(stage);
       persist();
     }
   } catch (error) {
-    state.generationError = `สร้างด่านไม่สำเร็จ: ${error.message}`;
+    if (runtime.generationToken === generationToken) {
+      state.generationError = `สร้างด่านไม่สำเร็จ: ${error.message}`;
+    }
   } finally {
-    state.generationBusy = false;
-    render();
+    if (runtime.generationToken === generationToken) {
+      state.generationBusy = false;
+      render();
+    }
   }
 }
 
@@ -839,6 +1366,7 @@ function exitLessonToMap({ fromHistory = false } = {}) {
   state.activeStepIndex = 0;
   clearFeedback();
   clearLiveFeedback();
+  stopSpeechPlayback("หยุดเสียงแล้ว กลับสู่หน้าแผนที่");
   closeModelPicker();
   persist();
   render();
@@ -857,6 +1385,8 @@ function startStage(stageId) {
   const stage = getStageById(state.stageCatalog, stageId);
   if (!stage) return;
 
+  stopSpeechPlayback("เตรียมอ่านคำอธิบายของด่านใหม่");
+  runtime.speechLastAutoKey = "";
   resetStageProgress(stageId);
   state.activeStageId = stageId;
   state.activeStepIndex = 0;
@@ -908,6 +1438,7 @@ async function handlePrimaryAction() {
   if (!stage || !step) return;
 
   if (step.type === "teach") {
+    stopSpeechPlayback("หยุดเสียงของขั้นก่อนหน้าแล้ว");
     state.activeStepIndex += 1;
     clearFeedback();
     clearLiveFeedback();
@@ -959,6 +1490,7 @@ async function handlePrimaryAction() {
 
   if (result.correct) {
     playSuccess();
+    stopSpeechPlayback("หยุดเสียงของขั้นก่อนหน้าแล้ว");
     state.xp += step.type === "choice" ? 16 : 22;
     state.gems += step.type === "choice" ? 4 : 6;
     removeReviewRecord(step.reviewSourceId);
@@ -1019,6 +1551,57 @@ function openProfile() {
   ui.profileDialog.showModal();
 }
 
+function resetLearningProgress() {
+  const confirmed = window.confirm(
+    "ต้องการรีเซ็ตเส้นทางเรียนทั้งหมดใช่ไหม?\n\nระบบจะล้างด่านที่ปลดล็อก, XP, หัวใจ, review deck และ stage ที่สร้างไว้ แล้วเริ่มสร้างเส้นทางใหม่ตั้งแต่ต้น แต่จะเก็บโปรไฟล์กับ API keys ไว้เหมือนเดิม",
+  );
+
+  if (!confirmed) return;
+
+  runtime.generationToken += 1;
+  stopSpeechPlayback("รีเซ็ตเส้นทางเรียนและหยุดเสียงแล้ว");
+  runtime.speechLastAutoKey = "";
+  closeModelPicker();
+  clearFeedback();
+  clearLiveFeedback();
+
+  state.curriculumSeed = createCurriculumSeed();
+  state.screen = "map";
+  state.hearts = MAX_HEARTS;
+  state.gems = 0;
+  state.xp = 0;
+  state.wins = 0;
+  state.losses = 0;
+  state.stageCatalog = [];
+  state.completedStageIds = [];
+  state.activeStageId = null;
+  state.activeStepIndex = 0;
+  state.reviewDeck = [];
+  state.teacherJournal = [];
+  state.stageAttempts = {};
+  state.draftAnswers = {};
+  state.lessonFeedback = { type: "", text: "" };
+  state.generationBusy = false;
+  state.generationError = "";
+  state.lastCampaignMessage = "รีเซ็ตเส้นทางการเรียนแล้ว กำลังสร้างด่านชุดใหม่ให้ตั้งแต่พื้นฐานที่สุด";
+
+  if (ui.stageResultDialog.open) {
+    ui.stageResultDialog.close();
+  }
+
+  if (ui.settingsDialog.open) {
+    ui.settingsDialog.close();
+  }
+
+  if (history.state?.screen !== "map") {
+    history.replaceState({ screen: "map" }, "", window.location.href);
+  }
+
+  persist();
+  render();
+  void ensureStagePool();
+}
+
 function bindEvents() {
   document.addEventListener("click", (event) => {
     if (event.target.closest("button")) {
@@ -1033,6 +1616,11 @@ function bindEvents() {
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && runtime.modelPickerOpen) {
       closeModelPicker();
+      return;
+    }
+
+    if (event.key === "Escape" && runtime.speechActive) {
+      stopSpeechPlayback("หยุดเสียงแล้ว");
       return;
     }
 
@@ -1064,6 +1652,19 @@ function bindEvents() {
     closeModelPicker();
     ui.settingsDialog.showModal();
   });
+  ui.speakLessonBtn.addEventListener("click", () => {
+    const stage = getCurrentStage();
+    const step = getCurrentStep(stage, state.activeStepIndex);
+    if (!stage || !step) return;
+
+    const speechKey = currentSpeechStepKey(stage, step);
+    if (runtime.speechActive && runtime.speechCurrentKey === speechKey) {
+      stopSpeechPlayback("หยุดเสียงแล้ว");
+      return;
+    }
+
+    void speakCurrentLesson(stage, step, { statusPrefix: "กำลังอ่านคำอธิบาย " });
+  });
   ui.primaryActionBtn.addEventListener("click", async () => {
     await handlePrimaryAction();
   });
@@ -1091,6 +1692,60 @@ function bindEvents() {
   });
   ui.validateModelsBtn.addEventListener("click", async () => {
     await validateModels();
+  });
+  ui.speechAutoReadToggle.addEventListener("change", (event) => {
+    state.speechAutoRead = Boolean(event.target.checked);
+    persist();
+    renderSpeechControls();
+  });
+  ui.speechVoiceFilterSelect.addEventListener("change", (event) => {
+    state.speechVoiceFilter = normalizeSpeechFilter(event.target.value);
+    const nextVoice = filteredSpeechVoices()[0];
+    if (nextVoice) {
+      state.speechVoiceURI = nextVoice.voiceURI;
+    }
+    persist();
+    renderSpeechSettings();
+    renderSpeechControls();
+  });
+  ui.speechVoiceSelect.addEventListener("change", (event) => {
+    state.speechVoiceURI = event.target.value;
+    persist();
+    renderSpeechSettings();
+    renderSpeechControls();
+  });
+  ui.speechRateInput.addEventListener("input", (event) => {
+    state.speechRate = normalizeBoundedNumber(event.target.value, 0.75, 1.25, 1);
+    persist();
+    renderSpeechSettings();
+  });
+  ui.speechPitchInput.addEventListener("input", (event) => {
+    state.speechPitch = normalizeBoundedNumber(event.target.value, 0.8, 1.2, 1);
+    persist();
+    renderSpeechSettings();
+  });
+  ui.speechVolumeInput.addEventListener("input", (event) => {
+    state.speechVolume = normalizeBoundedNumber(event.target.value, 0.4, 1, 1);
+    persist();
+    renderSpeechSettings();
+  });
+  ui.previewVoiceBtn.addEventListener("click", () => {
+    speakWithCurrentVoice(
+      "สวัสดี นี่คือตัวอย่างเสียงภาษาไทยของครู AI ฟรีในเครื่อง ค่าปกติของระบบจะยังไม่อ่านเองจนกว่าคุณจะกดปุ่มอ่าน",
+      "voice-preview",
+      "กำลังลองเสียงตัวอย่าง ",
+    );
+  });
+  ui.stopVoiceBtn.addEventListener("click", () => {
+    stopSpeechPlayback("หยุดเสียงแล้ว");
+  });
+  ui.refreshVoicesBtn.addEventListener("click", () => {
+    refreshSpeechVoices();
+    renderSpeechSettings();
+    renderSpeechControls();
+  });
+  ui.resetLearningBtn.addEventListener("click", () => {
+    resetLearningProgress();
   });
   ui.saveSettingsBtn.addEventListener("click", () => {
     persist();
@@ -1147,6 +1802,7 @@ window.advanceTime = () => {};
 
 initializeNavigation();
 bindEvents();
+initializeSpeech(handleSpeechVoicesChanged);
 render();
 
 if (!state.askedForProfile) {

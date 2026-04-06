@@ -135,6 +135,7 @@ pre {
 .campaign-stats,
 .lesson-progress-cluster,
 .teacher-head,
+.teacher-head-actions,
 .task-actions,
 .modal-header,
 .panel-header,
@@ -185,7 +186,8 @@ pre {
 
 .model-picker-button,
 .field input,
-.field textarea {
+.field textarea,
+.field select {
   width: 100%;
   border-radius: 16px;
   background: var(--panel);
@@ -541,15 +543,46 @@ pre {
   gap: 16px;
 }
 
+.teacher-head {
+  justify-content: space-between;
+  align-items: center;
+}
+
+.teacher-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 .teacher-badge {
   background: var(--accent-soft);
   color: #d5ffc8;
   font-size: 0.84rem;
 }
 
+.teacher-voice-button {
+  min-height: 42px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.teacher-voice-button[aria-pressed="true"] {
+  background: rgba(121, 203, 105, 0.16);
+  border-color: rgba(121, 203, 105, 0.32);
+  color: #d8ffc8;
+}
+
+.speech-status,
+.speech-note {
+  line-height: 1.7;
+}
+
 .teacher-speech {
   font-size: 1.08rem;
   line-height: 1.8;
+  white-space: pre-line;
 }
 
 .teacher-bullets,
@@ -657,6 +690,7 @@ pre {
 
 .practice-instruction {
   line-height: 1.7;
+  white-space: pre-line;
 }
 
 .answer-area {
@@ -692,6 +726,7 @@ pre {
 .feedback-panel {
   min-height: 72px;
   line-height: 1.7;
+  white-space: pre-line;
 }
 
 .feedback-panel.success {
@@ -720,6 +755,7 @@ pre {
 }
 
 .primary-button,
+.danger-button,
 .secondary-button,
 .ghost-button,
 .icon-button,
@@ -732,6 +768,13 @@ pre {
   padding: 14px 20px;
   background: linear-gradient(180deg, #98df78, #5ca84f);
   color: #10210d;
+  font-weight: 700;
+}
+
+.danger-button {
+  padding: 14px 20px;
+  background: linear-gradient(180deg, #ff9f9f, #d15454);
+  color: #2e0f0f;
   font-weight: 700;
 }
 
@@ -753,6 +796,7 @@ pre {
 }
 
 .primary-button:hover,
+.danger-button:hover,
 .secondary-button:hover,
 .ghost-button:hover,
 .icon-button:hover,
@@ -783,6 +827,56 @@ pre {
 .settings-card {
   max-height: min(90vh, 940px);
   overflow: auto;
+}
+
+.speech-section {
+  display: grid;
+  gap: 16px;
+}
+
+.toggle-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px;
+  border-radius: var(--radius-md);
+  background: var(--panel);
+  border: 1px solid var(--border);
+}
+
+.toggle-row input {
+  width: 18px;
+  height: 18px;
+  margin-top: 4px;
+}
+
+.toggle-row strong {
+  display: block;
+  margin-bottom: 4px;
+}
+
+.toggle-row p {
+  line-height: 1.6;
+}
+
+.voice-controls-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.voice-field-wide {
+  grid-column: 1 / -1;
+}
+
+.reset-section {
+  display: grid;
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.settings-reset-note {
+  line-height: 1.7;
 }
 
 .settings-grid,
@@ -842,7 +936,8 @@ pre {
   .campaign-panel,
   .lesson-shell,
   .settings-grid,
-  .form-grid {
+  .form-grid,
+  .voice-controls-grid {
     grid-template-columns: 1fr;
     display: grid;
   }

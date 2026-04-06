@@ -117,9 +117,15 @@
           <section class="teacher-card">
             <div class="teacher-head">
               <span class="teacher-badge">AI TEACHER</span>
-              <span id="lessonDifficulty" class="pill">ง่าย</span>
+              <div class="teacher-head-actions">
+                <button id="speakLessonBtn" class="ghost-button teacher-voice-button" type="button" aria-pressed="false">
+                  อ่านด้วยเสียง AI ฟรี
+                </button>
+                <span id="lessonDifficulty" class="pill">ง่าย</span>
+              </div>
             </div>
             <h3 id="stepTitle">กำลังเตรียมคำอธิบาย</h3>
+            <p id="speechStatus" class="muted speech-status">กำลังเตรียมระบบเสียงอ่านฟรี</p>
             <p id="teacherSpeech" class="teacher-speech"></p>
             <div id="teacherBullets" class="teacher-bullets"></div>
             <div id="memoryHook" class="memory-hook"></div>
@@ -197,7 +203,73 @@
             </div>
             <div id="settingsModelList" class="settings-model-list"></div>
           </section>
+
+          <section class="modal-section speech-section">
+            <div class="panel-header">
+              <h4>เสียงอ่าน AI ฟรีภาษาไทย</h4>
+              <span id="speechSupportBadge" class="status-badge tone-idle">กำลังโหลด</span>
+            </div>
+            <p id="speechSupportText" class="muted speech-note">
+              ระบบนี้ใช้เสียงสังเคราะห์ฟรีจากเบราว์เซอร์และ Windows ของเครื่องนี้ โดยจะแสดงและใช้เฉพาะเสียงภาษาไทยเท่านั้น ไม่ต้องใช้ API key และจะเลือกค่าเริ่มต้นตามเบราว์เซอร์ที่เปิดอยู่
+            </p>
+
+            <label class="toggle-row" for="speechAutoReadToggle">
+              <input id="speechAutoReadToggle" type="checkbox" />
+              <div>
+                <strong>อ่านอัตโนมัติเมื่อเปลี่ยนขั้น</strong>
+                <p class="muted">ค่าเริ่มต้นจะปิดไว้ก่อน ถ้าเปิดเองเมื่อเปลี่ยน step ครูจะอ่านคำอธิบายให้ทันที</p>
+              </div>
+            </label>
+
+            <div class="voice-controls-grid">
+              <label class="field">
+                <span>หมวดเสียงภาษาไทย</span>
+                <select id="speechVoiceFilterSelect">
+                  <option value="all">เสียงไทยทั้งหมด</option>
+                  <option value="female">เสียงผู้หญิงไทย</option>
+                  <option value="male">เสียงผู้ชายไทย</option>
+                </select>
+              </label>
+
+              <label class="field voice-field-wide">
+                <span>เลือกโมเดลเสียงภาษาไทย</span>
+                <select id="speechVoiceSelect"></select>
+              </label>
+
+              <label class="field">
+                <span>ความเร็ว <strong id="speechRateValue">1.00x</strong></span>
+                <input id="speechRateInput" type="range" min="0.75" max="1.25" step="0.05" />
+              </label>
+
+              <label class="field">
+                <span>โทนเสียง <strong id="speechPitchValue">1.00x</strong></span>
+                <input id="speechPitchInput" type="range" min="0.8" max="1.2" step="0.05" />
+              </label>
+
+              <label class="field">
+                <span>ความดัง <strong id="speechVolumeValue">100%</strong></span>
+                <input id="speechVolumeInput" type="range" min="0.4" max="1" step="0.05" />
+              </label>
+            </div>
+
+            <div class="inline-actions">
+              <button id="previewVoiceBtn" class="secondary-button" type="button">ลองฟังเสียงนี้</button>
+              <button id="stopVoiceBtn" class="ghost-button" type="button">หยุดเสียง</button>
+              <button id="refreshVoicesBtn" class="ghost-button" type="button">รีเฟรชรายการเสียง</button>
+            </div>
+          </section>
         </div>
+
+        <section class="modal-section reset-section">
+          <div class="panel-header">
+            <h4>รีเซ็ตการเรียน</h4>
+          </div>
+          <p class="muted settings-reset-note">
+            ปุ่มนี้จะรีเซ็ตด่านที่ปลดล็อก, XP, หัวใจ, review deck, stage ที่ AI และโหมดออฟไลน์เคยสร้างไว้
+            แล้วสร้างเส้นทางเรียนใหม่ตั้งแต่ต้นอีกครั้ง โดยจะเก็บโปรไฟล์และ API keys ของคุณไว้เหมือนเดิม
+          </p>
+          <button id="resetLearningBtn" class="danger-button" type="button">รีเซ็ตด่านและเริ่มเรียนใหม่</button>
+        </section>
 
         <div class="task-actions">
           <button id="validateModelsBtn" class="primary-button" type="button">ตรวจสอบโมเดลตอนนี้</button>

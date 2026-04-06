@@ -65,6 +65,243 @@ function stageBase(blueprint, order, steps, extras = {}) {
   };
 }
 
+function firstText(...values) {
+  for (let index = 0; index < values.length; index += 1) {
+    const value = values[index];
+    if (typeof value !== "string") continue;
+    const trimmed = value.trim();
+    if (trimmed) return trimmed;
+  }
+
+  return "";
+}
+
+function hashText(text) {
+  const input = String(text || "");
+  let hash = 7;
+
+  for (let index = 0; index < input.length; index += 1) {
+    hash = (hash * 31 + input.charCodeAt(index)) >>> 0;
+  }
+
+  return hash;
+}
+
+function pickSeededItem(seed, key, items) {
+  if (!Array.isArray(items) || !items.length) return null;
+  const index = hashText(`${seed || "seed"}:${key}`) % items.length;
+  return items[index];
+}
+
+function getPreviewCode(step) {
+  return firstText(step?.code, step?.answerReveal, step?.expectedAnswer, step?.starterCode);
+}
+
+function getPreviewOutput(step) {
+  return firstText(step?.output, step?.expectedOutput);
+}
+
+function buildDetailedExplanation(step, blueprint) {
+  const baseExplanation = firstText(step.explanation, step.teacherPrompt, blueprint.summary, blueprint.title);
+  const previewCode = getPreviewCode(step);
+  const previewOutput = getPreviewOutput(step);
+  const parts = [baseExplanation];
+
+  if (previewCode) {
+    parts.push(
+      "มองช่องตัวอย่างโค้ดทางขวาเป็นภาพตัวอย่างของสิ่งที่ครูกำลังพูดถึง ไม่ใช่ย่อหน้าคำอธิบาย ถ้ายังไม่เข้าใจให้ไล่ดูทีละส่วนว่าชื่อคำสั่ง วงเล็บ ข้อความ และตัวแปรอยู่ตรงไหน",
+    );
+  }
+
+  if (previewOutput) {
+    parts.push(
+      "ช่องผลลัพธ์ที่ควรเห็นมีไว้บอกปลายทางว่าเมื่อรันตัวอย่างแล้วหน้าจอควรออกมาแบบไหน ให้เชื่อมจากโค้ดไปหาผลลัพธ์ทีละบรรทัดแบบไม่ต้องรีบ",
+    );
+  }
+
+  if (step.type === "teach") {
+    parts.push(
+      "ขั้นนี้มีหน้าที่ทำให้ภาพรวมชัดก่อน คุณยังไม่จำเป็นต้องตอบหรือจำทุกอย่างในครั้งเดียว ขอเพียงมองให้ออกว่าคำสั่งนี้เอาไว้ทำอะไรและรูปทรงของมันเป็นแบบไหน",
+    );
+  } else if (step.type === "choice") {
+    parts.push(
+      "ขั้นนี้กำลังฝึกสายตาให้เริ่มแยกโค้ดที่รูปทรงถูกกับโค้ดที่รูปทรงผิดออกจากกัน เพราะมือใหม่มักต้องเห็นซ้ำหลายครั้งก่อนจะมั่นใจ",
+    );
+  } else if (step.type === "command") {
+    parts.push(
+      "ขั้นนี้เป็นคำสั่งจริงที่มักต้องพิมพ์ให้รูปทรงถูก จึงค่อย ๆ เช็กตัวสะกด ขีด วงเล็บ และช่องว่างทีละส่วนได้เลย ความแม่นสำคัญกว่าความเร็ว",
+    );
+  } else {
+    parts.push(
+      "ขั้นนี้ให้ค่อย ๆ ทำตามเป้าหมายของโจทย์ ถ้ายังจำไม่ได้ให้ย้อนดูตัวอย่างด้านขวาก่อน แล้วค่อยพิมพ์อย่างช้า ๆ มือใหม่ไม่จำเป็นต้องเก่งเร็ว แต่ควรเห็นภาพเดิมซ้ำจนเริ่มคุ้น",
+    );
+  }
+
+  if (step.correctionFocus) {
+    parts.push(`จุดที่คนเริ่มต้นมักพลาดคือ ${step.correctionFocus} ถ้ายังลังเลให้โฟกัสจุดนี้ก่อนเป็นพิเศษ`);
+  }
+
+  return parts.filter(Boolean).join("\n\n");
+}
+
+function buildSupportiveBullets(step) {
+  const bullets = Array.isArray(step.bulletPoints) ? step.bulletPoints.filter(Boolean) : [];
+
+  if (!bullets.length) {
+    if (step.type === "teach") {
+      bullets.push("ดูรูปทรงของโค้ดก่อน แล้วค่อยจำชื่อคำสั่ง");
+    } else {
+      bullets.push("ดูตัวอย่างด้านขวาเพื่อจับรูปทรงก่อนลงมือพิมพ์");
+    }
+  }
+
+  if (step.expectedOutput && !bullets.some((point) => /ผลลัพธ์/.test(point))) {
+    bullets.push("ดูผลลัพธ์ทางขวาควบคู่กับโค้ด จะช่วยให้เห็นว่าคำสั่งนี้ทำงานอะไร");
+  }
+
+  if (step.correctionFocus && !bullets.some((point) => point.includes(step.correctionFocus))) {
+    bullets.push(`จุดที่ต้องระวัง: ${step.correctionFocus}`);
+  }
+
+  if (!bullets.some((point) => /ช้า|รีบ|ทีละ/.test(point))) {
+    bullets.push(
+      step.type === "teach"
+        ? "อ่านทีละส่วนได้เลย ขั้นนี้ยังไม่ต้องรีบตอบ"
+        : "ทำทีละบรรทัดได้เลย ความเข้าใจสำคัญกว่าความเร็ว",
+    );
+  }
+
+  return [...new Set(bullets)].slice(0, 4);
+}
+
+function decorateStepForBeginner(step, blueprint) {
+  return {
+    ...step,
+    explanation: buildDetailedExplanation(step, blueprint),
+    bulletPoints: buildSupportiveBullets(step),
+    memoryHook: step.memoryHook || "จำทีละภาพ ไม่ต้องรีบจำทั้งบทพร้อมกัน",
+  };
+}
+
+function buildWarmupStep(stage, blueprint, journal, curriculumSeed) {
+  const previousTitle = journal?.length ? journal[journal.length - 1]?.title : "";
+  const focusStep =
+    pickSeededItem(
+      curriculumSeed,
+      `${stage.id}:warmup-preview`,
+      stage.steps.filter((step) => getPreviewCode(step) || getPreviewOutput(step)),
+    ) || stage.steps[0];
+  const opening =
+    pickSeededItem(curriculumSeed, `${stage.id}:warmup-copy`, [
+      "ก่อนเริ่มของใหม่ ครูอยากให้ตั้งหลักกับภาพใหญ่ของด่านนี้ก่อน",
+      "ด่านนี้เราไม่รีบไปของยาก เราจะค่อย ๆ ทำความคุ้นเคยกับแกนหลักก่อน",
+      "ก่อนลงมือพิมพ์ เราจะมองภาพรวมให้ชัดก่อนว่าด่านนี้กำลังสอนเรื่องอะไร",
+    ]) || "ก่อนเริ่มของใหม่ ครูอยากให้ตั้งหลักกับภาพใหญ่ของด่านนี้ก่อน";
+
+  const recapLine = previousTitle
+    ? `ด่านก่อนหน้าเราผ่านเรื่อง "${previousTitle}" มาแล้ว ด่านนี้จะต่อยอดแบบช้า ๆ จากตรงนั้น ไม่ได้กระโดดข้ามขั้น`
+    : "นี่คือช่วงเริ่มต้นของเส้นทางเรียน ไม่ต้องคาดหวังว่าจะจำทุกอย่างได้ในครั้งเดียว ขอให้เห็นภาพเดิมซ้ำจนเริ่มคุ้นก็พอ";
+
+  return teachStep("warmup-beginner", "ตั้งหลักก่อนเริ่มด่าน", opening, {
+    explanation:
+      `${opening}\n\n${recapLine}\n\n` +
+      `เป้าหมายของด่านนี้มีแค่อย่างเดียวคือ ${blueprint.summary} ถ้ายังไม่แม่นให้ดูตัวอย่างด้านขวาแล้วค่อยเริ่ม`,
+    bulletPoints: [
+      `เป้าหมายวันนี้: ${blueprint.summary}`,
+      "ด่านนี้ออกแบบให้ช้าและซ้ำได้ ไม่จำเป็นต้องรีบ",
+      "ถ้ายังงงให้ดูตัวอย่างด้านขวาก่อนลงมือ",
+    ],
+    code: getPreviewCode(focusStep),
+    output: getPreviewOutput(focusStep),
+    memoryHook: "การเรียนของมือใหม่ไม่ต้องไว ขอให้เห็นภาพเดิมซ้ำจนเริ่มคุ้นก็พอ",
+  });
+}
+
+function buildRepetitionStep(stage, curriculumSeed) {
+  const candidateSteps = stage.steps.filter(
+    (step) => step.type !== "teach" && firstText(step.expectedAnswer, step.answerReveal, step.instruction),
+  );
+
+  if (!candidateSteps.length || stage.difficulty > 4) {
+    return null;
+  }
+
+  const target = pickSeededItem(curriculumSeed, `${stage.id}:repeat-target`, candidateSteps);
+  if (!target) return null;
+
+  return {
+    ...target,
+    id: `repeat-${target.id}`,
+    title:
+      target.type === "choice"
+        ? "ย้ำอีกครั้งให้ตาเริ่มชิน"
+        : target.type === "command"
+          ? "ย้ำคำสั่งเดิมอีกครั้งแบบช้า ๆ"
+          : "ย้ำรูปทรงเดิมอีกครั้งแบบช้า ๆ",
+    teacherPrompt: "ขั้นนี้ตั้งใจให้ฝึกซ้ำเพื่อให้ภาพจำเริ่มนิ่ง",
+    explanation: firstText(target.explanation, target.teacherPrompt),
+    successText: "ดีมาก การทำซ้ำอย่างตั้งใจช่วยให้รูปแบบนี้เริ่มติดตาและติดมือ",
+    memoryHook: "การเรียนของมือใหม่โตจากการเห็นซ้ำและลองซ้ำ",
+  };
+}
+
+function buildSummaryStep(stage, blueprint, curriculumSeed) {
+  const focusStep =
+    pickSeededItem(
+      curriculumSeed,
+      `${stage.id}:summary-preview`,
+      [...stage.steps].reverse().filter((step) => getPreviewCode(step) || getPreviewOutput(step)),
+    ) || stage.steps[stage.steps.length - 1];
+  const closing =
+    pickSeededItem(curriculumSeed, `${stage.id}:summary-copy`, [
+      "ก่อนจบด่าน ครูอยากให้เราปิดภาพทั้งหมดให้แน่นอีกครั้ง",
+      "ยังไม่ต้องรีบไปด่านต่อไป เราจะสรุปแกนสำคัญของด่านนี้ให้ชัดก่อน",
+      "สิ่งที่สำคัญกว่าการผ่านด่านคือการเหลือภาพจำที่ถูกต้องติดหัวกลับไป",
+    ]) || "ก่อนจบด่าน ครูอยากให้เราปิดภาพทั้งหมดให้แน่นอีกครั้ง";
+
+  return teachStep("slow-summary", "สรุปให้แน่นก่อนจบด่าน", closing, {
+    explanation:
+      `${closing}\n\nหัวใจของด่านนี้คือ ${blueprint.summary} ` +
+      "ถ้ายังจำได้ไม่หมดไม่เป็นไร ขอให้กลับไปนึกออกว่าคำสั่งนี้หน้าตาแบบไหน ใช้เมื่อไร และต้องระวังอะไรเป็นพอ",
+    bulletPoints: [
+      `หัวใจของด่านนี้คือ ${blueprint.summary}`,
+      focusStep?.correctionFocus
+        ? `เวลาพิมพ์หรืออ่านโจทย์ ให้ระวังเรื่อง ${focusStep.correctionFocus}`
+        : "เวลาอ่านโค้ด ให้มองคำสั่งหลักก่อนแล้วค่อยดูรายละเอียดข้างใน",
+      "ถ้ายังไม่แม่น กลับมาดูตัวอย่างโค้ดและผลลัพธ์ซ้ำได้เสมอ เพราะการเห็นซ้ำคือส่วนหนึ่งของการเรียน",
+    ],
+    code: getPreviewCode(focusStep),
+    output: getPreviewOutput(focusStep),
+    memoryHook: firstText(focusStep?.memoryHook, "จำทีละก้อน แล้วด่านยากจะค่อย ๆ ง่ายขึ้น"),
+  });
+}
+
+function applyBeginnerPacing(stage, blueprint, journal, curriculumSeed) {
+  const baseSteps = stage.steps.map((step) => decorateStepForBeginner(step, blueprint));
+  const pacedSteps = [...baseSteps];
+  const repetitionStep = buildRepetitionStep({ ...stage, steps: baseSteps }, curriculumSeed);
+
+  if (repetitionStep) {
+    const firstActionIndex = pacedSteps.findIndex((step) => step.type !== "teach");
+    const insertIndex = firstActionIndex >= 0 ? firstActionIndex + 1 : pacedSteps.length;
+    pacedSteps.splice(insertIndex, 0, decorateStepForBeginner(repetitionStep, blueprint));
+  }
+
+  const warmupStep = buildWarmupStep({ ...stage, steps: pacedSteps }, blueprint, journal, curriculumSeed);
+  const summaryStep = buildSummaryStep({ ...stage, steps: pacedSteps }, blueprint, curriculumSeed);
+
+  return {
+    ...stage,
+    intro:
+      firstText(stage.intro) ||
+      `ด่านนี้จะสอนเรื่อง ${blueprint.title} แบบค่อยเป็นค่อยไปสำหรับมือใหม่ ไม่รีบกระโดดไปของยากก่อนที่ภาพเดิมจะชัด`,
+    completionTeaser:
+      firstText(stage.completionTeaser) ||
+      "ด่านถัดไปจะต่อยอดจากภาพเดิมอย่างช้า ๆ และยังพาคุณทบทวนของเก่าอยู่",
+    steps: [warmupStep, ...pacedSteps, summaryStep].filter(Boolean),
+  };
+}
+
 function buildReviewStep(reviewItem) {
   return practiceStep(`review-${reviewItem.id}`, "ทบทวนของที่เคยพลาด", reviewItem.teacherPrompt, {
     instruction: reviewItem.instruction,
@@ -86,7 +323,7 @@ function mergeReviewSteps(steps, reviewDeck) {
   return [...reviewSteps, ...steps];
 }
 
-function buildCoreStage(blueprint, order, reviewDeck) {
+function buildCoreStage(blueprint, order, reviewDeck, journal, curriculumSeed) {
   let steps = [];
 
   switch (blueprint.id) {
@@ -915,10 +1152,10 @@ function buildCoreStage(blueprint, order, reviewDeck) {
       steps = [];
   }
 
-  return stageBase(blueprint, order, mergeReviewSteps(steps, reviewDeck));
+  return applyBeginnerPacing(stageBase(blueprint, order, mergeReviewSteps(steps, reviewDeck)), blueprint, journal, curriculumSeed);
 }
 
-function buildProjectStage(blueprint, order, reviewDeck, journal) {
+function buildProjectStage(blueprint, order, reviewDeck, journal, curriculumSeed) {
   const masteredTags = Array.from(new Set(journal.flatMap((entry) => entry.tags || []))).slice(-6);
   const comboText = masteredTags.length ? masteredTags.join(", ") : "print, ตัวแปร, if, loop";
   const steps = [
@@ -1036,10 +1273,15 @@ function buildProjectStage(blueprint, order, reviewDeck, journal) {
       );
   }
 
-  return stageBase(blueprint, order, mergeReviewSteps(steps, reviewDeck), {
-    intro: `ด่านนี้เป็นโปรเจกต์รวมสกิล ${comboText} เพื่อให้เราเห็นว่าความจำเดิมเริ่มต่อเป็นงานจริงได้`,
-    completionTeaser: "ด่านถัดไปจะรวมของเดิมให้ใหญ่ขึ้นไปอีกจนเริ่มเป็นงานระดับ engineer",
-  });
+  return applyBeginnerPacing(
+    stageBase(blueprint, order, mergeReviewSteps(steps, reviewDeck), {
+      intro: `ด่านนี้เป็นโปรเจกต์รวมสกิล ${comboText} เพื่อให้เราเห็นว่าความจำเดิมเริ่มต่อเป็นงานจริงได้`,
+      completionTeaser: "ด่านถัดไปจะรวมของเดิมให้ใหญ่ขึ้นไปอีกจนเริ่มเป็นงานระดับ engineer",
+    }),
+    blueprint,
+    journal,
+    curriculumSeed,
+  );
 }
 
 function getBlueprintForOrder(order) {
@@ -1057,52 +1299,102 @@ function getBlueprintForOrder(order) {
   };
 }
 
+function stripFenceText(value) {
+  return String(value || "")
+    .trim()
+    .replace(/^```(?:python|py|bash|sh|text|json)?\s*/i, "")
+    .replace(/```$/, "")
+    .trim();
+}
+
+function looksLikeCodeBlockText(value) {
+  const text = stripFenceText(value);
+  if (!text) return false;
+
+  const firstLine = text.split("\n").map((line) => line.trim()).find(Boolean) || "";
+  return (
+    /^https?:\/\//i.test(firstLine) ||
+    /^(print|input|if|elif|else:|for|while|def|class|with|assert|from|import|python\b|py\b|pip\b|\.venv\\|[A-Za-z_][A-Za-z0-9_]*\s*=|[A-Za-z_][A-Za-z0-9_]*\(|[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*\()/.test(firstLine) ||
+    /[=(){}\[\]]/.test(text)
+  );
+}
+
+function looksLikeOutputText(value) {
+  const text = stripFenceText(value);
+  if (!text) return false;
+  if (text.length > 240) return false;
+  if (/^(คำอธิบาย|อธิบาย|โจทย์|ขั้นนี้|ให้พิมพ์|ลอง|ดู|ครู|หมายความ)/.test(text)) {
+    return false;
+  }
+  return true;
+}
+
 function sanitizeAiSteps(rawSteps) {
   if (!Array.isArray(rawSteps)) return [];
   return rawSteps
-    .map((step, index) => ({
-      id: step.id || `ai-step-${index + 1}`,
-      type: ["teach", "practice", "choice", "command"].includes(step.type) ? step.type : "teach",
-      title: step.title || `AI Step ${index + 1}`,
-      teacherPrompt: step.teacherPrompt || step.explanation || "",
-      explanation: step.explanation || "",
-      bulletPoints: Array.isArray(step.bulletPoints) ? step.bulletPoints : [],
-      code: step.code || "",
-      output: step.output || "",
-      instruction: step.instruction || "",
-      starterCode: step.starterCode || "",
-      answerReveal: step.answerReveal || "",
-      expectedAnswer: step.expectedAnswer || "",
-      acceptedAnswers: Array.isArray(step.acceptedAnswers) ? step.acceptedAnswers : [],
-      expectedOutput: step.expectedOutput || "",
-      correctionFocus: step.correctionFocus || "",
-      successText: step.successText || "",
-      memoryHook: step.memoryHook || "",
-      options: Array.isArray(step.options) ? step.options : [],
-      reviewSourceId: "",
-    }))
-    .filter((step) => step.title && step.teacherPrompt);
+    .map((step, index) => {
+      const codeCandidate = stripFenceText(step.code);
+      const outputCandidate = stripFenceText(step.output);
+      const starterCode = stripFenceText(step.starterCode);
+      const answerReveal = stripFenceText(step.answerReveal);
+      const expectedAnswer = stripFenceText(step.expectedAnswer);
+      const code = looksLikeCodeBlockText(codeCandidate) ? codeCandidate : "";
+      const output = looksLikeOutputText(outputCandidate) ? outputCandidate : "";
+      const explanation = [step.explanation, !code && codeCandidate ? codeCandidate : "", !output && outputCandidate ? outputCandidate : ""]
+        .filter(Boolean)
+        .join("\n\n");
+
+      return {
+        id: step.id || `ai-step-${index + 1}`,
+        type: ["teach", "practice", "choice", "command"].includes(step.type) ? step.type : "teach",
+        title: step.title || `AI Step ${index + 1}`,
+        teacherPrompt: firstText(step.teacherPrompt, explanation, step.instruction, step.title),
+        explanation,
+        bulletPoints: Array.isArray(step.bulletPoints) ? step.bulletPoints.filter(Boolean) : [],
+        code,
+        output,
+        instruction: step.instruction || "",
+        starterCode,
+        answerReveal,
+        expectedAnswer,
+        acceptedAnswers: Array.isArray(step.acceptedAnswers)
+          ? step.acceptedAnswers.map((answer) => stripFenceText(answer)).filter(Boolean)
+          : [],
+        expectedOutput: stripFenceText(step.expectedOutput),
+        correctionFocus: step.correctionFocus || "",
+        successText: step.successText || "",
+        memoryHook: step.memoryHook || "",
+        options: Array.isArray(step.options) ? step.options.map((option) => stripFenceText(option)).filter(Boolean) : [],
+        reviewSourceId: "",
+      };
+    })
+    .filter((step) => step.title && firstText(step.teacherPrompt, step.explanation, step.instruction, step.expectedAnswer, step.answerReveal));
 }
 
-function sanitizeAiStage(aiStage, blueprint, order, reviewDeck) {
+function sanitizeAiStage(aiStage, blueprint, order, reviewDeck, journal, curriculumSeed) {
   if (!aiStage || !Array.isArray(aiStage.steps) || !aiStage.steps.length) {
     return null;
   }
 
-  return stageBase(blueprint, order, mergeReviewSteps(sanitizeAiSteps(aiStage.steps), reviewDeck), {
-    generatedBy: "gemini",
-    intro: aiStage.intro || aiStage.summary || blueprint.summary,
-    completionTeaser: aiStage.completionTeaser || aiStage.nextTeaser || blueprint.unlockHint,
-    rewards: {
-      xp: Math.max(40, Number(aiStage.rewards?.xp) || 45 + blueprint.difficulty * 7),
-      gems: Math.max(8, Number(aiStage.rewards?.gems) || 10 + blueprint.difficulty * 2),
-      hearts: Math.max(1, Number(aiStage.rewards?.hearts) || (blueprint.difficulty >= 4 ? 1 : 2)),
-    },
-  });
+  return applyBeginnerPacing(
+    stageBase(blueprint, order, mergeReviewSteps(sanitizeAiSteps(aiStage.steps), reviewDeck), {
+      generatedBy: "gemini",
+      intro: aiStage.intro || aiStage.summary || blueprint.summary,
+      completionTeaser: aiStage.completionTeaser || aiStage.nextTeaser || blueprint.unlockHint,
+      rewards: {
+        xp: Math.max(40, Number(aiStage.rewards?.xp) || 45 + blueprint.difficulty * 7),
+        gems: Math.max(8, Number(aiStage.rewards?.gems) || 10 + blueprint.difficulty * 2),
+        hearts: Math.max(1, Number(aiStage.rewards?.hearts) || (blueprint.difficulty >= 4 ? 1 : 2)),
+      },
+    }),
+    blueprint,
+    journal,
+    curriculumSeed,
+  );
 }
 
 export async function createStage(options) {
-  const { order, reviewDeck, journal, keys, models, preferredModel, statusMap, onStatus } = options;
+  const { order, reviewDeck, journal, keys, models, preferredModel, statusMap, onStatus, curriculumSeed } = options;
   const blueprint = getBlueprintForOrder(order);
 
   if (keys.length) {
@@ -1115,17 +1407,18 @@ export async function createStage(options) {
       priorJournal: journal,
       statusMap,
       onStatus,
+      curriculumSeed,
     });
 
-    const sanitized = sanitizeAiStage(aiStage, blueprint, order, reviewDeck);
+    const sanitized = sanitizeAiStage(aiStage, blueprint, order, reviewDeck, journal, curriculumSeed);
     if (sanitized) {
       return sanitized;
     }
   }
 
   if (order <= CORE_CURRICULUM.length) {
-    return buildCoreStage(blueprint, order, reviewDeck);
+    return buildCoreStage(blueprint, order, reviewDeck, journal, curriculumSeed);
   }
 
-  return buildProjectStage(blueprint, order, reviewDeck, journal);
+  return buildProjectStage(blueprint, order, reviewDeck, journal, curriculumSeed);
 }

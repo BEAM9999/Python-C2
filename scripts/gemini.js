@@ -136,6 +136,7 @@ export async function requestTeacherStage({
   priorJournal,
   statusMap,
   onStatus,
+  curriculumSeed,
 }) {
   const history = priorJournal
     .slice(-8)
@@ -149,12 +150,24 @@ Return JSON only, with no markdown fences.
 Rules:
 - Teach before asking.
 - Thai explanation, English code.
+- The learner is a true beginner who gets confused easily, so explain very slowly and very concretely.
+- Move in tiny steps. Prefer one micro-concept per stage.
+- Reuse and recap earlier ideas instead of jumping ahead fast.
+- The tone must be patient, warm, and extremely beginner-friendly, like teaching someone who has never seen code before.
 - No topic repetition if it already appears in prior history.
 - Make the learner type real Python or real terminal commands where appropriate.
 - You may show one valid example first for easier levels, but do not design the task so the learner must match the sample exactly.
 - Prefer goal-based instructions such as the intended behavior, concept, or output.
 - Treat answerReveal and expectedAnswer as one valid example, not the only acceptable solution.
 - Avoid wording like "type every character exactly" unless the task is a literal terminal command that truly must be exact.
+- Use 5 to 7 steps per stage.
+- Include at least 2 teach steps and at least 2 active steps (practice, choice, or command).
+- For the first half of the curriculum, prefer a slow pattern such as watch -> copy -> recognize -> edit a little -> recap.
+- Fill explanation with 2 to 4 short Thai paragraphs for beginners, not just one sentence.
+- teacherPrompt should be a short Thai lesson goal, not a long explanation block.
+- code must contain only a code example, command example, or URL example. Never put Thai explanation sentences in code.
+- output must contain only the literal output or visible result. Never put Thai explanation sentences in output.
+- answerReveal and expectedAnswer must contain only code or command text, never explanatory prose.
 - The stage must be clean, correct, and child-friendly but technically true.
 
 Blueprint:
@@ -165,6 +178,7 @@ Blueprint:
 - Tags: ${(blueprint.tags || []).join(", ")}
 - Hint: ${blueprint.unlockHint}
 - Extra teaching goal: ${blueprint.teacherPrompt}
+- Curriculum seed for variation: ${curriculumSeed || "default-seed"}
 
 Prior completed history:
 ${history || "None yet"}
@@ -180,14 +194,14 @@ JSON shape:
       "type": "teach|practice|choice|command",
       "title": "string",
       "teacherPrompt": "string",
-      "explanation": "string",
+      "explanation": "2-4 short Thai paragraphs for a very beginner learner",
       "bulletPoints": ["string"],
-      "code": "string",
-      "output": "string",
+      "code": "code/command/url only",
+      "output": "literal output/result only",
       "instruction": "string",
-      "starterCode": "string",
-      "answerReveal": "string",
-      "expectedAnswer": "string",
+      "starterCode": "code/command only",
+      "answerReveal": "one valid code/command example only",
+      "expectedAnswer": "one valid code/command example only",
       "acceptedAnswers": ["string"],
       "expectedOutput": "string",
       "correctionFocus": "string",
@@ -208,7 +222,7 @@ JSON shape:
     prompt,
     generationConfig: {
       temperature: 0.5,
-      maxOutputTokens: 1600,
+      maxOutputTokens: 2200,
     },
   });
 }
